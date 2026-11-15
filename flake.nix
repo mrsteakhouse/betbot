@@ -48,7 +48,7 @@
             # TLS: reqwest with rustls (no openssl/pkg-config needed).
           };
 
-          formatter = pkgs.nixfmt;
+          formatter = pkgs.nixfmt-tree;
         };
     };
 }

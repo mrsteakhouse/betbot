@@ -2,8 +2,26 @@
 name = "betbot"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Tipping bot (Tippspiel) running as a Kubernetes CronJob"
 publish = false
 
 [dependencies]
+clap = { version = "4.6", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
+jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde-saphyr = { version = "2.1", default-features = false, features = ["deserialize"] }
+thiserror = "2"
+tokio = { version = "1.54", default-features = false, features = ["rt", "macros", "time", "signal", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "json"] }
+
+[dev-dependencies]
+tokio = { version = "1.54", default-features = false, features = ["rt", "macros", "time", "signal", "fs", "test-util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

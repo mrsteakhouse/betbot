@@ -41,5 +41,10 @@ Special rules are configurable. Example: the same result (2:1 and 1:2 count as t
   Remove bookmaker margin from 1X2 odds → implied probabilities → fit expected goals (λ home/away) → score-probability matrix → pick the tip with the highest *expected platform points* (scoring scheme configurable, kicktipp default 4/3/2), not simply the most likely score.
   Tip rules (e.g. max 6× the same result) are applied as constraints: when a limit is hit, switch the match with the smallest expected-points loss to its next-best tip.
   Rejected for now: fixed odds→score mapping (suboptimal); Dixon-Coles low-score correction may be added later as an alternative algorithm implementation (the algorithm is swappable).
+- Decided (2026-11-15):
+  - kicktipp shows bookmaker odds on the tip submission page → odds provider `platform` reads them from there.
+  - Tip window: only the complete NEXT matchday is tipped, never more than one matchday ahead. Implemented as a runner filter (independent of the platform): next matchday = lowest matchday with at least half as many open matches as the largest open matchday; postponed stragglers of earlier matchdays are tipped too, later matchdays never.
+  - Unsatisfiable tip rules → log a warning and keep the best tip (no failure) for now.
+  - User's community scoring: exact result 3, correct goal difference 2 (tip 1:0, result 2:1), correct tendency 1 (tip 2:1, result 3:1). Draws also get goal-difference points (tip 1:1, result 2:2 → 2), i.e. 3/2/1 for all outcomes. Scoring stays configurable per tenant; kicktipp default (4/3/2, no difference points for draws) remains the code default.
 - Open: license.
 - Next: trait design, config and Secret schema, kicktipp client, Helm chart, GitHub Actions.

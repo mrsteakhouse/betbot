@@ -1,0 +1,37 @@
+# Example betbot configuration. In Kubernetes this file comes from a ConfigMap;
+# credentials are never part of it (see credentialsDir below).
+tenantTimeoutSeconds: 300
+tenants:
+  # Offline tenant for local dry runs: matches, odds and tip history come from
+  # a fixture file, nothing is sent anywhere.
+  - name: demo
+    platform:
+      type: fake
+      fixture: examples/fake-data.yaml
+    odds: { type: platform }
+    algorithm: { type: poisson, maxTipGoals: 5 }
+    # scoring omitted = kicktipp default (tendency 2, goal difference 3, exact 4,
+    # no difference points for draws). This tenant uses a 3/2/1 scheme where
+    # draws also get goal-difference points (1:1 vs 2:2 = 2).
+    scoring:
+      homeWin: { tendency: 1, goalDifference: 2, exact: 3 }
+      draw:    { tendency: 1, goalDifference: 2, exact: 3 }
+      awayWin: { tendency: 1, goalDifference: 2, exact: 3 }
+    rules:
+      maxSameResult: { max: 6, scope: season, mirrored: true }
+    overwriteExistingTips: false
+
+  # A real kicktipp tenant. credentialsDir points to a mounted Secret with the
+  # files `username` and `password`.
+  # - name: alice
+  #   credentialsDir: /secrets/alice
+  #   platform: { type: kicktipp, community: my-round-slug }
+  #   odds: { type: platform }
+  #   algorithm: { type: poisson, maxTipGoals: 5 }
+  #   scoring:
+  #     homeWin: { tendency: 2, goalDifference: 3, exact: 4 }
+  #     draw:    { tendency: 2, exact: 4 }
+  #     awayWin: { tendency: 2, goalDifference: 3, exact: 4 }
+  #   rules:
+  #     maxSameResult: { max: 6, scope: season, mirrored: true }
+  #   overwriteExistingTips: false
