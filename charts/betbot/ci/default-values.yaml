@@ -1,0 +1,17 @@
+config:
+  tenantTimeoutSeconds: 120
+  tenants:
+    - name: demo
+      platform: {type: fake, fixture: examples/fake-data.yaml}
+    - name: alice
+      existingSecret: betbot-alice
+      platform: {type: kicktipp, community: my-round-slug}
+      odds: {type: platform}
+      algorithm: {type: poisson, maxTipGoals: 5}
+      scoring:
+        homeWin: {tendency: 1, goalDifference: 2, exact: 3}
+        draw: {tendency: 1, goalDifference: 2, exact: 3}
+        awayWin: {tendency: 1, goalDifference: 2, exact: 3}
+      rules:
+        maxSameResult: {max: 6, scope: matchday, mirrored: true}
+      overwriteExistingTips: false

@@ -1,0 +1,57 @@
+image:
+  repository: ghcr.io/mrsteakhouse/betbot
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Monday and Friday at 10:00 (timeZone below). Friday 10:00 is before the
+# weekend matchday (starts Friday 20:30); Monday 10:00 is after the weekend and
+# before midweek rounds (Tuesday/Wednesday evening). Existing tips are never
+# overwritten (unless overwriteExistingTips is set), so repeated runs are harmless.
+schedule: "0 10 * * 1,5"
+timeZone: Europe/Berlin
+suspend: false
+startingDeadlineSeconds: 14400
+successfulJobsHistoryLimit: 3
+failedJobsHistoryLimit: 3
+# Total runtime cap for the Job including retries.
+activeDeadlineSeconds: 1800
+# Retries after exit code 1 (tenant failed / signal). Exit code 2 (invalid config) fails immediately.
+backoffLimit: 2
+
+# Compute and log tips without submitting them (adds --dry-run).
+dryRun: false
+# RUST_LOG filter, e.g. "info" or "info,betbot=debug".
+logLevel: info
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Egress only to DNS (kube-system/kube-dns) and TCP 443 anywhere; no ingress.
+# Requires a CNI/controller that enforces NetworkPolicy (k3s: kube-router does).
+networkPolicy:
+  enabled: false
+
+# Rendered 1:1 into the app config (config.yaml), except per tenant:
+#   existingSecret  chart-only: name of a Secret with the keys `username` and
+#                   `password`. Mounted at /secrets/<tenant name>, and
+#                   credentialsDir is set automatically. Removed from the app config.
+# Credentials never belong in values. Create the Secret yourself (see NOTES / README).
+config:
+  tenantTimeoutSeconds: 300
+  # Required, at least one tenant. Example in README.md.
+  tenants: []

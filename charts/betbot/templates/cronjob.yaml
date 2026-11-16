@@ -1,0 +1,124 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "betbot.fullname" . }}
+  labels:
+    {{- include "betbot.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  timeZone: {{ .Values.timeZone | quote }}
+  suspend: {{ .Values.suspend }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+      podFailurePolicy:
+        rules:
+          # Exit code 2 = invalid config: a retry cannot help.
+          - action: FailJob
+            onExitCodes:
+              containerName: betbot
+              operator: In
+              values: [2]
+          # Node drains / evictions must not eat the retry budget.
+          - action: Ignore
+            onPodConditions:
+              - type: DisruptionTarget
+                status: "True"
+          # Exit code 1 (tenant failed / signal) falls through to the default: counted, retried up to backoffLimit.
+      template:
+        metadata:
+          annotations:
+            checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+            {{- with .Values.podAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          labels:
+            {{- include "betbot.selectorLabels" . | nindent 12 }}
+            {{- with .Values.podLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            # Lets uid 65532 read the root-owned Secret files (mode 0440).
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: betbot
+              image: {{ include "betbot.image" . | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              args:
+                - --config
+                - /etc/betbot/config.yaml
+                - --log-format
+                - json
+                {{- if .Values.dryRun }}
+                - --dry-run
+                {{- end }}
+              env:
+                - name: RUST_LOG
+                  value: {{ .Values.logLevel | quote }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              {{- with .Values.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/betbot
+                  readOnly: true
+                {{- range $i, $t := .Values.config.tenants }}
+                {{- if $t.existingSecret }}
+                - name: credentials-{{ $i }}
+                  mountPath: {{ printf "/secrets/%s" $t.name | quote }}
+                  readOnly: true
+                {{- end }}
+                {{- end }}
+          volumes:
+            - name: config
+              configMap:
+                name: {{ include "betbot.fullname" . }}
+            {{- range $i, $t := .Values.config.tenants }}
+            {{- if $t.existingSecret }}
+            - name: credentials-{{ $i }}
+              secret:
+                secretName: {{ $t.existingSecret | quote }}
+                # 288 decimal = 0440 octal; group = fsGroup 65532.
+                defaultMode: 288
+                items:
+                  - key: username
+                    path: username
+                  - key: password
+                    path: password
+            {{- end }}
+            {{- end }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

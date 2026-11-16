@@ -32,6 +32,9 @@ struct Cli {
     /// Compute and log tips without submitting them.
     #[arg(long, env = "BETBOT_DRY_RUN")]
     dry_run: bool,
+    /// Parse and validate the config, then exit (0 valid, 2 invalid). No network access.
+    #[arg(long)]
+    check_config: bool,
     /// Log output format.
     #[arg(long, env = "BETBOT_LOG_FORMAT", value_enum, default_value_t = LogFormat::Text)]
     log_format: LogFormat,
@@ -98,6 +101,10 @@ async fn main() -> ExitCode {
         }
     };
     let tenants: Vec<&str> = config.tenants.iter().map(|t| t.name.as_str()).collect();
+    if cli.check_config {
+        info!(tenants = ?tenants, "configuration is valid");
+        return ExitCode::SUCCESS;
+    }
     info!(
         version = env!("CARGO_PKG_VERSION"),
         dry_run = cli.dry_run,

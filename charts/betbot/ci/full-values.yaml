@@ -1,0 +1,13 @@
+dryRun: true
+suspend: true
+logLevel: "info,betbot=debug"
+networkPolicy:
+  enabled: true
+podLabels: {team: tips}
+podAnnotations: {example.com/note: x}
+nodeSelector: {kubernetes.io/arch: arm64}
+config:
+  tenants:
+    - name: bob.test-1
+      existingSecret: betbot-bob
+      platform: {type: kicktipp, community: Other_round-2}

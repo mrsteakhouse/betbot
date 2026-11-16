@@ -49,5 +49,12 @@ Special rules are configurable. Example: the same result (2:1 and 1:2 count as t
   - The user's kicktipp round shows "Strategieverbot Ergebnis aktiv ( max. 6/9 Tipps mit gleichem Ergebnis )" → the same-result rule is **per matchday** (max 6 of 9), mirrored results (2:1/1:2) count as the same.
   - kicktipp HTML fixtures (anonymised) live in `tests/fixtures/kicktipp/`. Fixtures must reflect the **server-rendered** HTML (view-source), not the browser DOM: kicktipp's JS adds classes like `tr.datarow`, `td.cell.colN`, `table.ktable` that the bot never sees (this broke the first real dry run).
   - kicktipp navigation: after login go to `/{community}/tippabgabe`; without URL parameters it always shows the CURRENT matchday (may be running, i.e. rows already closed). Specific matchday: `?tippsaisonId=<id>&spieltagIndex=<n>`; `tippsaisonId` is read from the page (hidden input), never configured. If the current page has no open matches, the bot moves exactly one matchday ahead.
+- Done: core skeleton, kicktipp client (real dry run against the user's round succeeded 2026-11-16).
+- In progress: Dockerfile (rust:1.100.0-trixie builder → gcr.io/distroless/cc-debian13:nonroot, uid 65532; rust-toolchain.toml deliberately not copied, so the builder tag must match its channel), Helm chart `charts/betbot` (CronJob, podFailurePolicy FailJob on exit 2, per-tenant `existingSecret` mounted at /secrets/<tenant>, ConfigMap from `values.config` with `existingSecret` stripped, optional NetworkPolicy), CLI flag `--check-config`.
+- Decided (2026-11-16):
+  - GitHub owner: `mrsteakhouse` → image `ghcr.io/mrsteakhouse/betbot`, chart repo `https://mrsteakhouse.github.io/betbot`.
+  - Image architectures: linux/amd64 + linux/arm64.
+  - Default CronJob schedule: Monday + Friday 10:00 Europe/Berlin (`0 10 * * 1,5`).
+  - Chart is versioned independently (Chart.yaml `version`), `appVersion` = Cargo version. Credentials only via user-created Secrets (keys `username`/`password`), never in values.
 - Open: license.
-- Next: trait design, config and Secret schema, kicktipp client, Helm chart, GitHub Actions.
+- Next: GitHub Actions (buildx amd64+arm64 to GHCR with VERSION/REVISION build-args, chart-releaser to GitHub Pages using ct.yaml, CI check builder tag == rust-toolchain channel, `helm template` + `betbot --check-config`), Renovate for base images, optimisation: for `scope: matchday` only read the current matchday as history.

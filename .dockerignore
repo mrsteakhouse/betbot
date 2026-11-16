@@ -1,0 +1,14 @@
+target/
+.git/
+.github/
+.direnv/
+.envrc
+.claude/
+result
+result-*
+charts/
+flake.nix
+flake.lock
+rust-toolchain.toml
+Dockerfile
+.dockerignore
