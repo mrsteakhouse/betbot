@@ -16,9 +16,6 @@ use crate::odds::{OddsError, OddsProvider, OddsSource};
 use crate::platform::{Platform, PlatformError, TipPlatform};
 use crate::rules::{MatchChoice, Rules, Violation};
 
-/// Upper bound for one notification send (outside the tenant timeout).
-const NOTIFY_TIMEOUT: Duration = Duration::from_secs(15);
-
 #[derive(Debug, Clone, Copy)]
 pub struct RunOptions {
     pub dry_run: bool,
@@ -392,12 +389,13 @@ async fn notify_tenant(
             debug!(notifier = %name, "notifier disabled, skipping");
             continue;
         };
-        match tokio::time::timeout(NOTIFY_TIMEOUT, notifier.send(&msg)).await {
+        // Outside the tenant timeout.
+        match tokio::time::timeout(notify::SEND_TIMEOUT, notifier.send(&msg)).await {
             Ok(Ok(())) => info!(notifier = %name, "notification sent"),
             Ok(Err(e)) => warn!(notifier = %name, error = %e, "notification failed"),
             Err(_elapsed) => warn!(
                 notifier = %name,
-                timeout_seconds = NOTIFY_TIMEOUT.as_secs(),
+                timeout_seconds = notify::SEND_TIMEOUT.as_secs(),
                 "notification failed: timed out"
             ),
         }

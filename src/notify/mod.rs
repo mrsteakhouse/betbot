@@ -24,6 +24,8 @@ use crate::credentials::{CredentialsError, Secret};
 const USER_AGENT: &str = concat!("betbot/", env!("CARGO_PKG_VERSION"));
 const TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Upper bound for one notification send (all recipients of a notifier).
+pub const SEND_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -47,6 +49,17 @@ pub struct Message {
     pub level: Level,
     pub title: String,
     pub body: String,
+}
+
+/// Message sent by `--test-notifiers` to the notifier `name`.
+pub fn test_message(name: &str) -> Message {
+    Message {
+        level: Level::Info,
+        title: "betbot: Testnachricht".into(),
+        body: format!(
+            "Dies ist eine Testnachricht für den Notifier \"{name}\". Es wurden keine Tipps abgegeben."
+        ),
+    }
 }
 
 pub trait Notify: Send + Sync {

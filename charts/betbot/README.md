@@ -133,6 +133,9 @@ with a warning and a failed send is only logged; neither changes the exit
 code. Since a failed Job is retried up to `backoffLimit` times, a persistent
 failure may be reported up to `backoffLimit + 1` times.
 
+The chart cannot run `betbot --test-notifiers`. Test the URL locally (see the
+betbot README, "Testing a notifier") before putting it into the Secret.
+
 With `networkPolicy.enabled: true` only TCP 443 is allowed; a self-hosted ntfy
 or webhook on another port (`disabletls=yes`, `scheme=http`) needs a rule in
 `networkPolicy.extraEgress`.
