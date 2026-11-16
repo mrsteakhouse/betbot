@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
-use super::{PlatformError, TipPlatform};
+use super::{HistoryScope, PlatformError, TipPlatform};
 use crate::credentials::Credentials;
 use crate::domain::{Match, OddsMap, OpenMatch, PlacedTip, TipSubmission};
 use parse::{ParseError, TipPage};
@@ -269,13 +269,29 @@ impl TipPlatform for KicktippPlatform {
         Ok(page.open_matches(&self.community))
     }
 
-    /// Tips of matchdays 1 up to the current one. Limitation: tips already
-    /// placed on later matchdays are not read (only matters for scope season).
-    async fn season_tips(&self) -> Result<Vec<PlacedTip>, PlatformError> {
+    /// Tips of the wanted matchdays: for `Season` matchdays 1 up to the
+    /// current one, for `Matchdays` exactly those. The current matchday
+    /// always comes from the cached tip page (incl. started rows of a mixed
+    /// matchday) without an extra request. Limitation: for `Season` tips
+    /// already placed on later matchdays are not read.
+    async fn placed_tips(&self, scope: &HistoryScope) -> Result<Vec<PlacedTip>, PlatformError> {
         let current = self.current_page().await?;
         let saison = current.hidden("tippsaisonId");
+        let wanted: Vec<u32> = match scope {
+            HistoryScope::Season => (1..current.matchday).collect(),
+            HistoryScope::Matchdays(v) => {
+                let mut v: Vec<u32> = v
+                    .iter()
+                    .copied()
+                    .filter(|&md| md != current.matchday)
+                    .collect();
+                v.sort_unstable();
+                v.dedup();
+                v
+            }
+        };
         let mut tips = Vec::new();
-        for md in 1..current.matchday {
+        for md in wanted {
             tips.extend(self.fetch_matchday(md, saison).await?.placed_tips());
         }
         tips.extend(current.placed_tips());
@@ -464,7 +480,10 @@ mod tests {
     #[tokio::test]
     async fn season_tips_reads_all_matchdays() {
         let server = MockServer::start(season_handler(false)).await;
-        let tips = platform_for(&server).season_tips().await.unwrap();
+        let tips = platform_for(&server)
+            .placed_tips(&HistoryScope::Season)
+            .await
+            .unwrap();
         let ids: Vec<String> = tips.iter().map(|t| t.match_id.to_string()).collect();
         let expected: Vec<String> = (1..=2)
             .flat_map(|md| (0..9).map(move |i| format!("md{md}-row{i}")))
@@ -482,8 +501,67 @@ mod tests {
         assert_eq!(targets.len(), 3, "{targets:?}");
 
         let server = MockServer::start(season_handler(true)).await;
-        let err = platform_for(&server).season_tips().await.unwrap_err();
+        let err = platform_for(&server)
+            .placed_tips(&HistoryScope::Season)
+            .await
+            .unwrap_err();
         assert!(matches!(err, PlatformError::UnexpectedPage(_)), "{err:?}");
+    }
+
+    fn tip_tuples(tips: &[PlacedTip]) -> Vec<(String, u32, Tip)> {
+        tips.iter()
+            .map(|t| (t.match_id.to_string(), t.matchday, t.tip))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn matchday_scope_needs_no_extra_request() {
+        let server = MockServer::start(season_handler(false)).await;
+        let p = platform_for(&server);
+        let tips = p
+            .placed_tips(&HistoryScope::Matchdays(vec![3]))
+            .await
+            .unwrap();
+        assert_eq!(server.requests().len(), 1);
+        let current = p.current_page().await.unwrap();
+        assert_eq!(tip_tuples(&tips), tip_tuples(&current.placed_tips()));
+
+        // Another matchday costs exactly one GET; the current page stays cached.
+        let tips = p
+            .placed_tips(&HistoryScope::Matchdays(vec![1, 3, 1]))
+            .await
+            .unwrap();
+        let ids: Vec<String> = tips.iter().map(|t| t.match_id.to_string()).collect();
+        let expected: Vec<String> = (0..9).map(|i| format!("md1-row{i}")).collect();
+        assert_eq!(ids, expected);
+        let reqs = server.requests();
+        assert_eq!(reqs.len(), 2, "{reqs:?}");
+        assert_eq!(reqs[1].query("spieltagIndex").as_deref(), Some("1"));
+        assert_eq!(reqs[1].query("tippsaisonId").as_deref(), Some("1000001"));
+    }
+
+    #[tokio::test]
+    async fn matchday_scope_of_mixed_matchday_returns_started_rows() {
+        let server = MockServer::start(|r: &Request| {
+            if is_tip_page_get(r) && r.query("spieltagIndex").is_none() {
+                Response::ok(mixed_md10())
+            } else {
+                Response::not_found()
+            }
+        })
+        .await;
+        let tips = platform_for(&server)
+            .placed_tips(&HistoryScope::Matchdays(vec![10]))
+            .await
+            .unwrap();
+        assert_eq!(
+            tip_tuples(&tips),
+            [
+                ("md10-row0".to_owned(), 10, Tip { home: 2, away: 0 }),
+                ("md10-row1".to_owned(), 10, Tip { home: 1, away: 2 }),
+            ]
+        );
+        assert_eq!(server.requests().len(), 1);
     }
 
     #[tokio::test]

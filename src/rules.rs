@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::Deserialize;
 
 use crate::domain::{Candidate, MatchId, PlacedTip, Tip};
+use crate::platform::HistoryScope;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -84,8 +85,21 @@ impl MaxSameResult {
 }
 
 impl Rules {
-    pub fn needs_history(&self) -> bool {
-        self.max_same_result.is_some()
+    /// Which tip history the rules need, given the matchdays of the tip
+    /// window. `None` = no history needed. Any season-scoped rule needs the
+    /// whole season; matchday-scoped rules only need the window's matchdays
+    /// (history of other matchdays never counts for them).
+    pub fn history_scope(&self, window: &[u32]) -> Option<HistoryScope> {
+        // Scopes of all history-based rules (add future rules here).
+        let mut scopes = self.max_same_result.iter().map(|r| r.scope).peekable();
+        scopes.peek()?;
+        if scopes.any(|s| s == Scope::Season) {
+            return Some(HistoryScope::Season);
+        }
+        let mut matchdays = window.to_vec();
+        matchdays.sort_unstable();
+        matchdays.dedup();
+        Some(HistoryScope::Matchdays(matchdays))
     }
 
     /// Picks one candidate per match. Without rules every match gets its best
@@ -351,9 +365,22 @@ mod tests {
     }
 
     #[test]
+    fn history_scope_follows_rule_scope() {
+        assert_eq!(Rules::default().history_scope(&[12, 10, 10]), None);
+        assert_eq!(
+            rules(6, Scope::Matchday, true).history_scope(&[12, 10, 10]),
+            Some(HistoryScope::Matchdays(vec![10, 12]))
+        );
+        assert_eq!(
+            rules(6, Scope::Season, true).history_scope(&[12, 10, 10]),
+            Some(HistoryScope::Season)
+        );
+    }
+
+    #[test]
     fn f_no_rules_takes_top() {
         let rules = Rules::default();
-        assert!(!rules.needs_history());
+        assert_eq!(rules.history_scope(&[12]), None);
         let history = history_b([1; 5]);
         let r = rules.apply(&history, &fixtures_a());
         assert_eq!(tips(&r), ["2:1", "2:1", "1:2", "1:2"]);

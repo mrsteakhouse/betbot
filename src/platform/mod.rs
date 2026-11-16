@@ -20,8 +20,13 @@ pub trait TipPlatform: Send + Sync {
     /// This is not relied upon: the runner applies the tip window (next matchday
     /// plus postponed stragglers, never later) to whatever is returned.
     fn open_matches(&self) -> impl Future<Output = Result<Vec<OpenMatch>, PlatformError>> + Send;
-    /// ALL tips of the user in the season (any matchday), including open matches that already have a tip.
-    fn season_tips(&self) -> impl Future<Output = Result<Vec<PlacedTip>, PlatformError>> + Send;
+    /// Tips of the user (incl. open matches that already have a tip and started
+    /// matches of a mixed matchday) within `scope`. Platforms may return more
+    /// than asked, never less.
+    fn placed_tips(
+        &self,
+        scope: &HistoryScope,
+    ) -> impl Future<Output = Result<Vec<PlacedTip>, PlatformError>> + Send;
     /// Platform-native odds for the given matches. Missing key = none. Platforms without odds return an empty map.
     fn odds(
         &self,
@@ -32,6 +37,15 @@ pub trait TipPlatform: Send + Sync {
         &self,
         tips: &[TipSubmission],
     ) -> impl Future<Output = Result<(), PlatformError>> + Send;
+}
+
+/// Which already placed tips a platform has to return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryScope {
+    /// All tips of the season.
+    Season,
+    /// Only tips of these matchdays.
+    Matchdays(Vec<u32>),
 }
 
 #[derive(Debug, Error)]
@@ -102,10 +116,10 @@ impl TipPlatform for Platform {
         }
     }
 
-    async fn season_tips(&self) -> Result<Vec<PlacedTip>, PlatformError> {
+    async fn placed_tips(&self, scope: &HistoryScope) -> Result<Vec<PlacedTip>, PlatformError> {
         match self {
-            Self::Fake(p) => p.season_tips().await,
-            Self::Kicktipp(p) => p.season_tips().await,
+            Self::Fake(p) => p.placed_tips(scope).await,
+            Self::Kicktipp(p) => p.placed_tips(scope).await,
         }
     }
 
