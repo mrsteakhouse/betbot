@@ -156,10 +156,40 @@ tipped) sends nothing.
 - A failed run is retried by Kubernetes (`backoffLimit`), so a persistent
   failure may be reported up to three times.
 
+### Testing a notifier
+
+`--test-notifiers` sends one German test message ("betbot: Testnachricht")
+to every configured notifier, including notifiers no tenant references, and
+exits. It does not log in to any platform, reads no credentials and submits
+no tips. Unlike a normal run, failures are visible: each notifier is logged
+as sent or failed (by name and kind, never the URL) and the exit code is
+non-zero if any notifier failed. Run it locally with the same URL you put
+into the Secret (write it into the file with an editor, so the token stays
+out of your shell history):
+
+```yaml
+# config.yaml (a valid config still needs at least one tenant)
+notifiers:
+  - name: telegram-main
+    urlFile: ./notifier-url.txt
+tenants:
+  - name: alice
+    platform: { type: kicktipp, community: my-round-slug }
+    notifiers: [telegram-main]
+```
+
+```sh
+betbot --config config.yaml --test-notifiers
+```
+
+In the cluster the CronJob's arguments are fixed by the chart, so the test
+runs locally; testing in the cluster would need a one-off pod with the
+notifier Secret mounted.
+
 ## Command line
 
 ```text
-betbot --config <FILE> [--dry-run] [--check-config] [--log-format text|json]
+betbot --config <FILE> [--dry-run | --check-config | --test-notifiers] [--log-format text|json]
 ```
 
 | Flag | Env | Meaning |
@@ -167,11 +197,15 @@ betbot --config <FILE> [--dry-run] [--check-config] [--log-format text|json]
 | `--config` | `BETBOT_CONFIG` | Path to the YAML config. |
 | `--dry-run` | `BETBOT_DRY_RUN` | Compute and log the tips, but do not submit them. |
 | `--check-config` | – | Validate the config and exit, without network access. |
+| `--test-notifiers` | – | Send a test message to every configured notifier and exit. No platform access. |
 | `--log-format` | `BETBOT_LOG_FORMAT` | `text` (default) or `json`. |
 | – | `RUST_LOG` | Log filter, e.g. `info` (default) or `info,betbot=debug`. |
 
 Exit codes: `0` all tenants succeeded, `1` at least one tenant failed or the
 run was interrupted, `2` invalid config (Kubernetes does not retry it).
+With `--test-notifiers`: `0` all test messages sent, `1` a send failed or
+timed out (15 s), `2` no notifier configured or a URL file is missing,
+unreadable or invalid.
 
 ## Deployment with Helm
 
