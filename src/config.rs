@@ -112,6 +112,19 @@ impl Config {
                 }
                 AlgorithmConfig::Poisson(_) => {}
             }
+            if let PlatformConfig::Kicktipp(k) = &t.platform
+                && (k.community.is_empty()
+                    || !k
+                        .community
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+            {
+                // The slug is interpolated into URL paths.
+                return invalid(format!(
+                    "tenant {:?}: platform.community must be non-empty and contain only [A-Za-z0-9_-]",
+                    t.name
+                ));
+            }
             if let PlatformConfig::Fake(f) = &t.platform
                 && f.fixture.as_os_str().is_empty()
             {
@@ -158,7 +171,7 @@ mod tests {
             t.rules.max_same_result,
             Some(MaxSameResult {
                 max: 6,
-                scope: Scope::Season,
+                scope: Scope::Matchday,
                 mirrored: true
             })
         );
@@ -255,5 +268,11 @@ tenants:
         assert_invalid(&format!("tenantTimeoutSeconds: 0\n{}", minimal("")));
         assert_invalid("tenants:\n  - name: ' a'\n    platform: { type: fake, fixture: f.yaml }\n");
         assert_invalid("tenants:\n  - name: a\n    platform: { type: fake, fixture: '' }\n");
+        for community in ["a/../b", "", "a b", "a?b"] {
+            assert_invalid(&format!(
+                "tenants:\n  - name: k\n    credentialsDir: /s\n    platform: {{ type: kicktipp, community: '{community}' }}\n"
+            ));
+        }
+        parse("tenants:\n  - name: k\n    credentialsDir: /s\n    platform: { type: kicktipp, community: Test_runde-1 }\n").unwrap();
     }
 }

@@ -18,7 +18,7 @@ tenants:
       draw:    { tendency: 1, goalDifference: 2, exact: 3 }
       awayWin: { tendency: 1, goalDifference: 2, exact: 3 }
     rules:
-      maxSameResult: { max: 6, scope: season, mirrored: true }
+      maxSameResult: { max: 6, scope: matchday, mirrored: true }
     overwriteExistingTips: false
 
   # A real kicktipp tenant. credentialsDir points to a mounted Secret with the
@@ -33,5 +33,7 @@ tenants:
   #     draw:    { tendency: 2, exact: 4 }
   #     awayWin: { tendency: 2, goalDifference: 3, exact: 4 }
   #   rules:
-  #     maxSameResult: { max: 6, scope: season, mirrored: true }
+  #     # kicktipp shows this limit as 'Strategieverbot Ergebnis' on the tip page;
+  #     # the bot logs it but the config is authoritative.
+  #     maxSameResult: { max: 6, scope: matchday, mirrored: true }
   #   overwriteExistingTips: false

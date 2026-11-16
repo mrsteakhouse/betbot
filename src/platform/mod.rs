@@ -38,18 +38,14 @@ pub trait TipPlatform: Send + Sync {
 pub enum PlatformError {
     #[error("authentication failed: {0}")]
     Auth(String),
-    #[expect(dead_code, reason = "used by the kicktipp client in the next step")]
     #[error("transport error: {0}")]
     Transport(String),
-    #[expect(dead_code, reason = "used by the kicktipp client in the next step")]
     #[error("unexpected page: {0}")]
     UnexpectedPage(String),
     #[error("tips rejected: {0}")]
     Rejected(String),
     #[error("fake platform fixture: {0}")]
     Fixture(String),
-    #[error("not implemented yet: {0}")]
-    NotImplemented(&'static str),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,7 +81,7 @@ impl Platform {
                 let creds = creds.ok_or_else(|| {
                     PlatformError::Auth("kicktipp requires credentials (credentialsDir)".into())
                 })?;
-                Ok(Self::Kicktipp(KicktippPlatform::new(c, creds)))
+                Ok(Self::Kicktipp(KicktippPlatform::new(c, creds)?))
             }
         }
     }

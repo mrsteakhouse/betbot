@@ -12,15 +12,11 @@ use thiserror::Error;
 pub struct MatchId(String);
 
 impl MatchId {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the kicktipp client in the next step")
-    )]
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 
-    #[expect(dead_code, reason = "used by the kicktipp client in the next step")]
+    #[cfg_attr(not(test), expect(dead_code, reason = "only read in tests so far"))]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -39,10 +35,19 @@ pub struct Match {
     pub id: MatchId,
     pub home: String,
     pub away: String,
-    #[expect(dead_code, reason = "used by the kicktipp client in the next step")]
+    #[expect(
+        dead_code,
+        reason = "provided by platforms, not read by the runner yet"
+    )]
     pub kickoff: jiff::Timestamp,
     pub matchday: u32,
-    #[expect(dead_code, reason = "used by the kicktipp client in the next step")]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "provided by platforms, not read by the runner yet"
+        )
+    )]
     pub competition: String,
 }
 

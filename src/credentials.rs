@@ -10,10 +10,6 @@ use thiserror::Error;
 pub struct Secret(String);
 
 impl Secret {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the kicktipp client in the next step")
-    )]
     pub fn expose(&self) -> &str {
         &self.0
     }
@@ -74,18 +70,10 @@ impl Credentials {
         })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the kicktipp client in the next step")
-    )]
     pub fn username(&self) -> &Secret {
         &self.username
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the kicktipp client in the next step")
-    )]
     pub fn password(&self) -> &Secret {
         &self.password
     }

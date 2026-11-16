@@ -525,6 +525,62 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn mixed_matchday_rule_counts_started_tips() {
+        // Matchday 10 is running: six already started matches (synthetic ids
+        // as produced by the kicktipp client) carry mirrored 2:1/1:2 tips, so
+        // the per-matchday limit of 6 is reached for the open matches.
+        let ou = Some(OverUnder {
+            over: 1.4,
+            under: 2.9,
+        });
+        let fav = Odds {
+            over_under_2_5: ou.clone(),
+            ..odds(1.5, 4.6, 5.5)
+        };
+        let underdog_home = Odds {
+            over_under_2_5: ou,
+            ..odds(5.5, 4.6, 1.5)
+        };
+        let mirrored = |t: Tip| (t.home.max(t.away), t.home.min(t.away));
+        assert_eq!(
+            mirrored(top_tip(&fav)),
+            (2, 1),
+            "test premise: favourite's top tip is 2:1"
+        );
+        let history = (0..6)
+            .map(|i| PlacedTip {
+                matchday: 10,
+                match_id: MatchId::new(format!("md10-row{i}")),
+                tip: if i % 2 == 0 {
+                    Tip { home: 2, away: 1 }
+                } else {
+                    Tip { home: 1, away: 2 }
+                },
+            })
+            .collect();
+        let p = FakePlatform::new(FakeData {
+            matches: vec![
+                on_matchday(10, fake_match("1644299505", Some(fav), None)),
+                on_matchday(10, fake_match("1644299507", Some(underdog_home), None)),
+            ],
+            history,
+        });
+        let rules = Rules {
+            max_same_result: Some(MaxSameResult {
+                max: 6,
+                scope: Scope::Matchday,
+                mirrored: true,
+            }),
+        };
+        let r = run(&p, &rules, opts(false, false)).await.unwrap();
+        assert_eq!(r.submitted, 2);
+        assert_eq!(r.violations, 0);
+        for s in &p.submitted_calls()[0] {
+            assert_ne!(mirrored(s.tip), (2, 1), "{}", s.tip);
+        }
+    }
+
     fn on_matchday(matchday: u32, m: FakeMatch) -> FakeMatch {
         FakeMatch { matchday, ..m }
     }
