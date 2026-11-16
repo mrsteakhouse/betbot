@@ -7,6 +7,7 @@ mod domain;
 mod notify;
 mod odds;
 mod platform;
+mod report;
 mod rules;
 mod runner;
 #[cfg(test)]
@@ -32,7 +33,7 @@ struct Cli {
     /// Path to the YAML config file.
     #[arg(long, env = "BETBOT_CONFIG")]
     config: PathBuf,
-    /// Compute and log tips without submitting them.
+    /// Compute the tips and print them as a table, but do not submit them.
     #[arg(long, env = "BETBOT_DRY_RUN")]
     dry_run: bool,
     /// Parse and validate the config, then exit (0 valid, 2 invalid). No network access.
@@ -51,11 +52,32 @@ fn init_logging(format: LogFormat) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_ansi(false);
+        .with_ansi(false)
+        // stdout is reserved for the dry-run table.
+        .with_writer(std::io::stderr);
     // Called exactly once at startup, so no global subscriber is set yet.
     match format {
         LogFormat::Text => builder.init(),
         LogFormat::Json => builder.json().init(),
+    }
+}
+
+/// `--dry-run`: prints the per-tenant tables on stdout. Write errors (e.g. a
+/// closed pipe) are only logged and never change the exit code.
+fn print_dry_run_table(outcomes: &[runner::TenantOutcome]) {
+    use std::io::Write as _;
+
+    let table = report::render_all(outcomes);
+    let mut stdout = std::io::stdout().lock();
+    if let Err(e) = stdout
+        .write_all(table.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            debug!(error = %e, "cannot print dry-run table: stdout closed");
+        } else {
+            warn!(error = %e, "cannot print dry-run table");
+        }
     }
 }
 
@@ -226,6 +248,9 @@ async fn main() -> ExitCode {
 
     tokio::select! {
         outcomes = runner::run_all(config, cli.dry_run) => {
+            if cli.dry_run {
+                print_dry_run_table(&outcomes);
+            }
             let failed_tenants: Vec<&str> = outcomes
                 .iter()
                 .filter(|o| o.result.is_err())
