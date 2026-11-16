@@ -56,9 +56,9 @@ Special rules are configurable. Example: the same result (2:1 and 1:2 count as t
   - Image architectures: linux/amd64 + linux/arm64.
   - Default CronJob schedule: Monday + Friday 10:00 Europe/Berlin (`0 10 * * 1,5`).
   - Chart version == app version (both bumped by release-please); `appVersion` is the default image tag. Credentials only via user-created Secrets (keys `username`/`password`), never in values.
-- Open: license.
+- Decided (2026-11-16): license `MIT OR Apache-2.0` (LICENSE-MIT, LICENSE-APACHE).
 - Done: first release v0.3.0 (image + chart published 2026-11-16).
-- Next: optimisation: for `scope: matchday` only read the current matchday as history.
+- Decided (2026-11-16): tip history is read per `HistoryScope`: `TipPlatform::placed_tips(scope)` with `Season` (all matchdays) or `Matchdays(window)` (platforms may return more, never less). `Rules::history_scope(window)`: no rule → no history, any `scope: season` rule → Season, otherwise Matchdays. For matchday-only rules kicktipp needs no extra requests: the cached tip page holds all tips of the matchday incl. started rows.
 
 # Delivery / CI
 - CI: `.github/workflows/ci.yml` (fmt, clippy, nextest, cargo-deny, `scripts/check-versions.sh`, helm lint + ct lint, rendered chart config → `betbot --check-config`, docker build). Weekly RUSTSEC check: `audit.yml`.
