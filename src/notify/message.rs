@@ -124,7 +124,7 @@ fn write_tips(body: &mut String, tips: &[ReportedTip]) {
     }
 }
 
-fn warning_text(w: &TenantWarning) -> String {
+pub(crate) fn warning_text(w: &TenantWarning) -> String {
     match w {
         TenantWarning::Skipped { home, away, reason } => {
             format!("{home} - {away}: nicht getippt ({reason})")
@@ -156,6 +156,7 @@ mod tests {
             home: home.into(),
             away: away.into(),
             tip: Tip { home: h, away: a },
+            expected_points: 0.0,
         }
     }
 

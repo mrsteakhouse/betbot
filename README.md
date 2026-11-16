@@ -33,7 +33,8 @@ The first supported platform is [kicktipp.de](https://www.kicktipp.de) (Bundesli
    the fewest expected points switches to its next-best tip. Unsatisfiable
    rules log a warning and keep the best tips.
 5. **Submit:** the tips are submitted and verified by reloading the page.
-   With `--dry-run` they are only logged.
+   With `--dry-run` they are only logged, and a table of the tips (with
+   expected points, EP) is printed on stdout.
 
 ## Configuration
 
@@ -177,7 +178,7 @@ betbot --config <FILE> [--dry-run | --check-config | --test-notifiers] [--log-fo
 | Flag | Env | Meaning |
 | --- | --- | --- |
 | `--config` | `BETBOT_CONFIG` | Path to the YAML config. |
-| `--dry-run` | `BETBOT_DRY_RUN` | Compute and log the tips, but do not submit them. |
+| `--dry-run` | `BETBOT_DRY_RUN` | Compute the tips and print them as a table, but do not submit them. |
 | `--check-config` | – | Validate the config and exit, without network access. |
 | `--test-notifiers` | – | Send a test message to every configured notifier and exit. No platform access. |
 | `--log-format` | `BETBOT_LOG_FORMAT` | `text` (default) or `json`. |
@@ -188,6 +189,21 @@ run was interrupted, `2` invalid config (Kubernetes does not retry it).
 With `--test-notifiers`: `0` all test messages sent, `1` a send failed or
 timed out (15 s), `2` no notifier configured or a URL file is missing,
 unreadable or invalid.
+
+### Dry run
+
+With `--dry-run` nothing is submitted. After all tenants have run, betbot
+prints one table per tenant (in config order) on stdout: matchday, teams, tip,
+expected points (EP), warnings and errors. Logs go to stderr, so
+`betbot --config config.yaml --dry-run 2>/dev/null` shows only the table:
+
+```text
+demo – Spieltag 12 (dry run)
+  FC Nordstadt – SV Südhafen    2:0  (EP 1.042)
+  TSV Westfeld – 1. FC Ostberg  1:1  (EP 0.710)
+```
+
+Without `--dry-run` nothing is printed on stdout.
 
 ## Deployment with Helm
 

@@ -45,6 +45,8 @@ pub struct ReportedTip {
     pub home: String,
     pub away: String,
     pub tip: Tip,
+    /// Expected platform points of the chosen tip.
+    pub expected_points: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,6 +253,7 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
             home: fixture.map_or_else(String::new, |m| m.home.clone()),
             away: fixture.map_or_else(String::new, |m| m.away.clone()),
             tip: a.tip,
+            expected_points: a.expected_points,
         });
     }
 
@@ -1109,15 +1112,13 @@ mod tests {
         });
         let r = run(&p, &Rules::default(), opts(true, false)).await.unwrap();
         assert_eq!(r.matchdays, [12]);
-        assert_eq!(
-            r.tips,
-            [ReportedTip {
-                matchday: 12,
-                home: "m2-home".into(),
-                away: "m2-away".into(),
-                tip: top_tip(&odds(3.8, 3.5, 1.95)),
-            }]
-        );
+        assert_eq!(r.tips.len(), 1);
+        let t = &r.tips[0];
+        assert_eq!(t.matchday, 12);
+        assert_eq!(t.home, "m2-home");
+        assert_eq!(t.away, "m2-away");
+        assert_eq!(t.tip, top_tip(&odds(3.8, 3.5, 1.95)));
+        assert!(t.expected_points > 0.0, "{}", t.expected_points);
         assert_eq!(
             r.warnings,
             [TenantWarning::Skipped {
