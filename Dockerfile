@@ -33,6 +33,7 @@ ARG SOURCE=https://github.com/mrsteakhouse/betbot
 LABEL org.opencontainers.image.title="betbot" \
       org.opencontainers.image.description="Tipping bot (Tippspiel) running as a Kubernetes CronJob" \
       org.opencontainers.image.source="${SOURCE}" \
+      org.opencontainers.image.licenses="MIT OR Apache-2.0" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}"
 COPY --from=builder /build/target/release/betbot /usr/local/bin/betbot
