@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::Deserialize;
 
-use super::{PlatformError, TipPlatform};
+use super::{HistoryScope, PlatformError, TipPlatform};
 use crate::domain::{Match, MatchId, Odds, OddsMap, OpenMatch, PlacedTip, Tip, TipSubmission};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,6 +54,7 @@ impl FakeMatch {
 struct FakeState {
     data: FakeData,
     submitted: Vec<Vec<TipSubmission>>,
+    scopes: Vec<HistoryScope>,
 }
 
 pub struct FakePlatform {
@@ -67,6 +68,7 @@ impl FakePlatform {
             state: Mutex::new(FakeState {
                 data,
                 submitted: Vec::new(),
+                scopes: Vec::new(),
             }),
             fail_login: false,
         }
@@ -92,6 +94,12 @@ impl FakePlatform {
     #[cfg_attr(not(test), expect(dead_code, reason = "test inspection"))]
     pub fn submitted_calls(&self) -> Vec<Vec<TipSubmission>> {
         self.state().submitted.clone()
+    }
+
+    /// The scope of every `placed_tips` call so far, in order.
+    #[cfg_attr(not(test), expect(dead_code, reason = "test inspection"))]
+    pub fn requested_scopes(&self) -> Vec<HistoryScope> {
+        self.state().scopes.clone()
     }
 
     fn state(&self) -> MutexGuard<'_, FakeState> {
@@ -121,8 +129,9 @@ impl TipPlatform for FakePlatform {
             .collect())
     }
 
-    async fn season_tips(&self) -> Result<Vec<PlacedTip>, PlatformError> {
-        let state = self.state();
+    async fn placed_tips(&self, scope: &HistoryScope) -> Result<Vec<PlacedTip>, PlatformError> {
+        let mut state = self.state();
+        state.scopes.push(scope.clone());
         let current = state.data.matches.iter().filter_map(|m| {
             m.tip.map(|tip| PlacedTip {
                 matchday: m.matchday,
@@ -130,7 +139,17 @@ impl TipPlatform for FakePlatform {
                 tip,
             })
         });
-        Ok(state.data.history.iter().cloned().chain(current).collect())
+        Ok(state
+            .data
+            .history
+            .iter()
+            .cloned()
+            .chain(current)
+            .filter(|t| match scope {
+                HistoryScope::Season => true,
+                HistoryScope::Matchdays(v) => v.contains(&t.matchday),
+            })
+            .collect())
     }
 
     async fn odds(&self, matches: &[Match]) -> Result<OddsMap, PlatformError> {
@@ -186,9 +205,24 @@ mod tests {
         let odds = p.odds(&fixtures).await.unwrap();
         assert_eq!(odds.len(), 3);
         assert!(odds.values().any(|o| o.over_under_2_5.is_some()));
-        let tips = p.season_tips().await.unwrap();
+        let tips = p.placed_tips(&HistoryScope::Season).await.unwrap();
         assert!(tips.iter().any(|t| t.matchday == 11));
         assert!(tips.iter().any(|t| t.matchday == 12));
+    }
+
+    #[tokio::test]
+    async fn placed_tips_filters_matchdays() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/fake-data.yaml");
+        let p = FakePlatform::from_file(&path).await.unwrap();
+        let md12 = HistoryScope::Matchdays(vec![12]);
+        let tips = p.placed_tips(&md12).await.unwrap();
+        assert!(!tips.is_empty());
+        assert!(tips.iter().all(|t| t.matchday == 12));
+        let md11 = HistoryScope::Matchdays(vec![11]);
+        let tips = p.placed_tips(&md11).await.unwrap();
+        assert!(!tips.is_empty());
+        assert!(tips.iter().all(|t| t.matchday == 11));
+        assert_eq!(p.requested_scopes(), [md12, md11]);
     }
 
     #[tokio::test]

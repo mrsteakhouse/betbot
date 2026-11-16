@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use thiserror::Error;
-use tracing::{Instrument, error, info, info_span, warn};
+use tracing::{Instrument, debug, error, info, info_span, warn};
 
 use crate::algorithm::{self, TipAlgorithm};
 use crate::config::{Config, TenantConfig};
@@ -104,6 +104,7 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
         });
     }
 
+    let window: Vec<u32> = open.iter().map(|m| m.fixture.matchday).collect();
     let mut fixed: Vec<PlacedTip> = Vec::new();
     let mut todo: Vec<Match> = Vec::new();
     for m in open {
@@ -126,9 +127,10 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
         "fetched open matches"
     );
 
-    let history: Vec<PlacedTip> = if rules.needs_history() {
+    let history: Vec<PlacedTip> = if let Some(scope) = rules.history_scope(&window) {
+        debug!(?scope, "reading tip history");
         let mut by_id: HashMap<MatchId, PlacedTip> = platform
-            .season_tips()
+            .placed_tips(&scope)
             .await?
             .into_iter()
             .map(|t| (t.match_id.clone(), t))
@@ -306,7 +308,7 @@ mod tests {
     use crate::domain::{Odds, OverUnder, Tip};
     use crate::odds::PlatformOdds;
     use crate::platform::fake::{FakeData, FakeMatch, FakePlatform};
-    use crate::platform::{FakeConfig, KicktippConfig, PlatformConfig};
+    use crate::platform::{FakeConfig, HistoryScope, KicktippConfig, PlatformConfig};
     use crate::rules::{MaxSameResult, Scope};
 
     fn odds(home: f64, draw: f64, away: f64) -> Odds {
@@ -579,6 +581,67 @@ mod tests {
         for s in &p.submitted_calls()[0] {
             assert_ne!(mirrored(s.tip), (2, 1), "{}", s.tip);
         }
+    }
+
+    #[tokio::test]
+    async fn matchday_rule_reads_only_window_history() {
+        // Six mirrored 2:1/1:2 tips on other matchdays must not affect a
+        // per-matchday rule for matchday 12.
+        let fav = Odds {
+            over_under_2_5: Some(OverUnder {
+                over: 1.4,
+                under: 2.9,
+            }),
+            ..odds(1.5, 4.6, 5.5)
+        };
+        let top = top_tip(&fav);
+        let mirrored = |t: Tip| (t.home.max(t.away), t.home.min(t.away));
+        assert_eq!(mirrored(top), (2, 1), "test premise: top tip is 2:1");
+        let history = (0..6)
+            .map(|i| PlacedTip {
+                matchday: 1 + i,
+                match_id: MatchId::new(format!("h{i}")),
+                tip: if i % 2 == 0 {
+                    Tip { home: 2, away: 1 }
+                } else {
+                    Tip { home: 1, away: 2 }
+                },
+            })
+            .collect();
+        let p = FakePlatform::new(FakeData {
+            matches: vec![fake_match("m1", Some(fav), None)],
+            history,
+        });
+        let rules = Rules {
+            max_same_result: Some(MaxSameResult {
+                max: 6,
+                scope: Scope::Matchday,
+                mirrored: true,
+            }),
+        };
+        let r = run(&p, &rules, opts(false, false)).await.unwrap();
+        assert_eq!(r.submitted, 1);
+        assert_eq!(r.violations, 0);
+        assert_eq!(p.submitted_calls()[0][0].tip, top);
+        assert_eq!(p.requested_scopes(), [HistoryScope::Matchdays(vec![12])]);
+    }
+
+    #[tokio::test]
+    async fn history_scope_requested_per_rule() {
+        let season = Rules {
+            max_same_result: Some(MaxSameResult {
+                max: 6,
+                scope: Scope::Season,
+                mirrored: true,
+            }),
+        };
+        let p = FakePlatform::new(two_matches());
+        run(&p, &season, opts(true, false)).await.unwrap();
+        assert_eq!(p.requested_scopes(), [HistoryScope::Season]);
+
+        let p = FakePlatform::new(two_matches());
+        run(&p, &Rules::default(), opts(true, false)).await.unwrap();
+        assert!(p.requested_scopes().is_empty());
     }
 
     fn on_matchday(matchday: u32, m: FakeMatch) -> FakeMatch {
