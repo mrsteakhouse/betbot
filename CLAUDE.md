@@ -72,4 +72,4 @@ Special rules are configurable. Example: the same result (2:1 and 1:2 count as t
 - Rust toolchain: `rust-toolchain.toml`; the Dockerfile builder tag (`rust:<channel>-trixie`) must match (checked by `scripts/check-versions.sh`; Dependabot ignores the `rust` image for that reason).
 - GitHub Actions are pinned to full commit SHAs with a `# vX.Y.Z` comment; Dependabot updates actions, cargo and docker base images.
 - Git author for this repo: `mrsteakhouse1@gmail.com` (set in local git config).
-- `main` is protected by a ruleset: no direct pushes, every change goes through a PR from a feature branch (squash merge, PR title = Conventional Commit). `gh` CLI is not installed — push the branch and open the PR via the link GitHub prints.
+- `main` is protected by a ruleset: no direct pushes, every change goes through a PR from a feature branch (squash merge, PR title = Conventional Commit). The `gh` CLI is part of the dev shell (`nix develop -c gh pr create ...`).
