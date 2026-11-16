@@ -14,6 +14,9 @@ use crate::odds::OddsConfig;
 use crate::platform::PlatformConfig;
 use crate::rules::Rules;
 
+/// Upper bound for `algorithm.variation.tolerance` (expected points).
+const MAX_VARIATION_TOLERANCE: f64 = 1.0;
+
 fn default_tenant_timeout() -> u64 {
     300
 }
@@ -140,6 +143,17 @@ impl Config {
                         t.name
                     ));
                 }
+                AlgorithmConfig::Poisson(p)
+                    if p.variation.is_some_and(|v| {
+                        !(v.tolerance.is_finite()
+                            && (0.0..=MAX_VARIATION_TOLERANCE).contains(&v.tolerance))
+                    }) =>
+                {
+                    return invalid(format!(
+                        "tenant {:?}: algorithm.variation.tolerance must be a number in 0..=1 (expected points)",
+                        t.name
+                    ));
+                }
                 AlgorithmConfig::Poisson(_) => {}
             }
             if let PlatformConfig::Kicktipp(k) = &t.platform
@@ -180,6 +194,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::algorithm::poisson::VariationConfig;
     use crate::rules::{MaxSameResult, Scope};
 
     fn minimal(extra_tenant: &str) -> String {
@@ -226,6 +241,7 @@ mod tests {
         let t = &c.tenants[0];
         assert_eq!(t.scoring, ScoringScheme::default());
         assert!(matches!(&t.algorithm, AlgorithmConfig::Poisson(p) if p.max_tip_goals == 5));
+        assert!(matches!(&t.algorithm, AlgorithmConfig::Poisson(p) if p.variation.is_none()));
         assert!(matches!(t.odds, OddsConfig::Platform));
         assert!(!t.overwrite_existing_tips);
         assert!(t.credentials_dir.is_none());
@@ -327,6 +343,88 @@ tenants:
         ));
         assert_parse_err(&minimal("    algorithm: { type: poisson, foo: 1 }\n"));
         assert_parse_err(&minimal("    platform2: 1\n"));
+    }
+
+    fn variation(c: &Config) -> Option<VariationConfig> {
+        match &c.tenants[0].algorithm {
+            AlgorithmConfig::Poisson(p) => p.variation,
+        }
+    }
+
+    #[test]
+    fn variation_parses() {
+        let c = parse(&minimal(
+            "    algorithm:\n      type: poisson\n      maxTipGoals: 4\n      variation: { seed: 42, tolerance: 0.05 }\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            variation(&c),
+            Some(VariationConfig {
+                seed: 42,
+                tolerance: 0.05
+            })
+        );
+        let c = parse(&minimal(
+            "    algorithm: { type: poisson, variation: { seed: -7, tolerance: 0 } }\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            variation(&c),
+            Some(VariationConfig {
+                seed: -7,
+                tolerance: 0.0
+            })
+        );
+        let c = parse(&minimal(
+            "    algorithm: { type: poisson, variation: { seed: 1, tolerance: 1 } }\n",
+        ))
+        .unwrap();
+        assert_eq!(variation(&c).map(|v| v.tolerance), Some(1.0));
+    }
+
+    #[test]
+    fn variation_parse_errors() {
+        for v in [
+            "{ seed: 1, tolerance: 0.1, foo: 1 }",
+            "{ tolerance: 0.1 }",
+            "{ seed: 1 }",
+            "{ seed: abc, tolerance: 0.1 }",
+        ] {
+            assert_parse_err(&minimal(&format!(
+                "    algorithm: {{ type: poisson, variation: {v} }}\n"
+            )));
+        }
+    }
+
+    #[test]
+    fn variation_tolerance_invalid() {
+        let with_tolerance = |tol: &str| {
+            minimal(&format!(
+                "    algorithm: {{ type: poisson, variation: {{ seed: 1, tolerance: {tol} }} }}\n"
+            ))
+        };
+        for tol in ["-0.1", "1.5", "1.0000001"] {
+            assert_invalid(&with_tolerance(tol));
+        }
+        // serde-saphyr already rejects non-finite floats while parsing ...
+        for tol in [".nan", ".inf", "-.inf"] {
+            assert_parse_err(&with_tolerance(tol));
+        }
+        // ... the validator rejects them as well.
+        let mut c = parse(&with_tolerance("0.1")).unwrap();
+        for tol in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            c.tenants[0].algorithm = AlgorithmConfig::Poisson(crate::algorithm::PoissonConfig {
+                max_tip_goals: 5,
+                variation: Some(VariationConfig {
+                    seed: 1,
+                    tolerance: tol,
+                }),
+            });
+            assert!(
+                matches!(c.validate(), Err(ConfigError::Invalid(_))),
+                "{tol}"
+            );
+        }
     }
 
     #[test]

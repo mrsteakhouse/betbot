@@ -90,7 +90,8 @@ config. Credentials never belong in values.
 
 All other tenant keys (`platform`, `odds`, `algorithm`, `scoring`, `rules`,
 `overwriteExistingTips`, `credentialsDir`) are passed through to betbot
-unchanged; see `examples/config.yaml` in the repository.
+unchanged; see `examples/config.yaml` in the repository. This includes the
+optional tip variation `algorithm.variation: { seed, tolerance }`.
 
 ## Notifications
 

@@ -443,7 +443,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::algorithm::poisson::PoissonAlgorithm;
+    use crate::algorithm::poisson::{PoissonAlgorithm, VariationConfig};
     use crate::domain::{Odds, OverUnder, Tip};
     use crate::odds::PlatformOdds;
     use crate::platform::fake::{FakeData, FakeMatch, FakePlatform};
@@ -782,6 +782,60 @@ mod tests {
         let p = FakePlatform::new(two_matches());
         run(&p, &Rules::default(), opts(true, false)).await.unwrap();
         assert!(p.requested_scopes().is_empty());
+    }
+
+    async fn run_with(
+        p: &FakePlatform,
+        algorithm: &dyn TipAlgorithm,
+        rules: &Rules,
+        o: RunOptions,
+    ) -> Result<TenantReport, TenantError> {
+        run_tenant(
+            p,
+            &PlatformOdds(p),
+            algorithm,
+            &ScoringScheme::default(),
+            rules,
+            o,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn variation_respects_max_same_result() {
+        let even = odds(2.6, 3.4, 2.6);
+        let p = FakePlatform::new(FakeData {
+            matches: (0..4)
+                .map(|i| fake_match(&format!("m{i}"), Some(even.clone()), None))
+                .collect(),
+            history: vec![],
+        });
+        let alg = PoissonAlgorithm::new(5).with_variation(Some(VariationConfig {
+            seed: 3,
+            tolerance: 0.05,
+        }));
+        let rules = Rules {
+            max_same_result: Some(MaxSameResult {
+                max: 1,
+                scope: Scope::Matchday,
+                mirrored: true,
+            }),
+        };
+        let r = run_with(&p, &alg, &rules, opts(false, false))
+            .await
+            .unwrap();
+        assert_eq!(r.submitted, 4);
+        assert_eq!(r.violations, 0);
+        let first = p.submitted_calls()[0].clone();
+        let normalised: HashSet<(u8, u8)> = first
+            .iter()
+            .map(|s| (s.tip.home.max(s.tip.away), s.tip.home.min(s.tip.away)))
+            .collect();
+        assert_eq!(normalised.len(), 4, "{first:?}");
+
+        let r = run_with(&p, &alg, &rules, opts(false, true)).await.unwrap();
+        assert_eq!(r.submitted, 4);
+        assert_eq!(p.submitted_calls()[1], first);
     }
 
     fn on_matchday(matchday: u32, m: FakeMatch) -> FakeMatch {

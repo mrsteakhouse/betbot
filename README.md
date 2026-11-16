@@ -28,6 +28,10 @@ The first supported platform is [kicktipp.de](https://www.kicktipp.de) (Bundesli
    3. Build the probability matrix of all exact results.
    4. Pick the tip with the highest *expected points* under the tenant's
       scoring scheme. That is not necessarily the most likely result.
+   5. Optional `variation`: instead of always the best tip, pick one of the
+      tips within `tolerance` expected points of the best, deterministically
+      from a per-tenant seed and the team names. Tenants in the same round
+      then do not all tip the same.
 4. **Rules:** constraints such as "the same result at most 6 times per
    matchday" are applied afterwards. When a limit is hit, the match that loses
    the fewest expected points switches to its next-best tip. Unsatisfiable
@@ -50,7 +54,10 @@ tenants:
       type: kicktipp
       community: my-round-slug     # from https://www.kicktipp.de/<slug>/
     odds: { type: platform }       # default
-    algorithm: { type: poisson, maxTipGoals: 5 }  # default, maxTipGoals 1..=10
+    algorithm:
+      type: poisson                # default
+      maxTipGoals: 5               # default, 1..=10
+      variation: { seed: 42, tolerance: 0.05 }  # optional, see below
     scoring:                       # default: kicktipp standard 4/3/2
       homeWin: { tendency: 1, goalDifference: 2, exact: 3 }
       draw:    { tendency: 1, goalDifference: 2, exact: 3 }
@@ -71,6 +78,8 @@ tenants:
 | `tenants[].odds.type` | `platform` | Where the odds come from. |
 | `tenants[].algorithm.type` | `poisson` | Tip algorithm. |
 | `tenants[].algorithm.maxTipGoals` | `5` | Highest number of goals per team that is tipped (1–10). |
+| `tenants[].algorithm.variation.seed` | – (block optional) | Integer seed of the tip variation; required when `variation` is set. |
+| `tenants[].algorithm.variation.tolerance` | – (block optional) | Maximum expected-points loss against the best tip (0–1, `0` = no variation); required when `variation` is set. |
 | `tenants[].scoring` | kicktipp 4/3/2 | Points per outcome (`homeWin`, `draw`, `awayWin`) for `tendency`, `goalDifference` (optional) and `exact`. The default gives no goal-difference points for draws. |
 | `tenants[].rules.maxSameResult.max` | – | Maximum number of tips with the same result (≥ 1). |
 | `tenants[].rules.maxSameResult.scope` | – | `matchday` or `season`. |
@@ -84,6 +93,15 @@ Match the scoring scheme and rules to your round's settings. kicktipp shows a
 result limit as "Strategieverbot Ergebnis (max. 6/9 Tipps mit gleichem
 Ergebnis)" on the tip page, which corresponds to
 `maxSameResult: { max: 6, scope: matchday, mirrored: true }`.
+
+`algorithm.variation` picks uniformly among all tips whose expected points are
+at most `tolerance` below the best one, using the seed and the two team names.
+For identical odds the pick is always the same, but odds drift between runs
+can change it, which matters with `overwriteExistingTips: true`. Different
+seeds only lead to different tips where several tips are close in expected
+points; for clear favourites everybody still gets the best tip. Rules are
+applied to the varied pick; if it hits a limit, the bot may fall back to the
+pure best tip.
 
 A complete example with an offline tenant is in
 [`examples/config.yaml`](examples/config.yaml).

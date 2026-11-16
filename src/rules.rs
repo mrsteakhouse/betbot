@@ -35,7 +35,7 @@ pub struct Rules {
     pub max_same_result: Option<MaxSameResult>,
 }
 
-/// Ranked candidates of one match (non-empty, best first).
+/// Ranked candidates of one match (non-empty, preferred first).
 #[derive(Debug, Clone)]
 pub struct MatchChoice {
     pub match_id: MatchId,
@@ -48,7 +48,7 @@ pub struct Assignment {
     pub match_id: MatchId,
     pub tip: Tip,
     pub expected_points: f64,
-    /// Index into the match's candidate list (0 = best).
+    /// Index into the match's candidate list (0 = preferred).
     pub rank: usize,
 }
 
@@ -102,8 +102,8 @@ impl Rules {
         Some(HistoryScope::Matchdays(matchdays))
     }
 
-    /// Picks one candidate per match. Without rules every match gets its best
-    /// candidate. With `maxSameResult` the matches over the limit are greedily
+    /// Picks one candidate per match. Without rules every match gets its
+    /// preferred (first) candidate. With `maxSameResult` the matches over the limit are greedily
     /// switched to the lower-ranked candidate with the smallest expected-points
     /// loss whose result still has room. Limits that cannot be met are reported
     /// as violations (the remaining picks are kept).
@@ -362,6 +362,26 @@ mod tests {
         let r = rules(1, Scope::Season, true).apply(&history, &fx);
         assert_eq!(tips(&r), ["0:0", "2:1"]);
         assert!(r.violations.is_empty());
+    }
+
+    #[test]
+    fn variation_chosen_first_with_limit() {
+        // A variation pick (1:0) sits in front of the EP-best 2:1.
+        let fx = vec![choice(
+            "m1",
+            3,
+            &[("1:0", 1.45), ("2:1", 1.50), ("0:0", 0.8)],
+        )];
+        let history = [placed(3, "h", "1:0")];
+        let r = rules(1, Scope::Matchday, true).apply(&history, &fx);
+        assert_eq!(tips(&r), ["2:1"]);
+        assert!((r.assignments[0].expected_points - 1.50).abs() < 1e-12);
+        assert_eq!(r.assignments[0].rank, 1);
+        assert!(r.violations.is_empty());
+
+        let r = rules(1, Scope::Matchday, true).apply(&[], &fx);
+        assert_eq!(tips(&r), ["1:0"]);
+        assert_eq!(r.assignments[0].rank, 0);
     }
 
     #[test]
