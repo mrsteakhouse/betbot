@@ -42,6 +42,7 @@
               pkgs.kubectl
               pkgs.yq-go
               pkgs.actionlint
+              pkgs.gh
               pkgs.shellcheck
             ];
 
