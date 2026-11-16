@@ -38,8 +38,9 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 
 {{/*
 App config (config.yaml). `existingSecret` is chart-only and removed here (the app
-rejects unknown fields); credentialsDir is derived from it. `omit` returns a copy,
-so .Values is never mutated.
+rejects unknown fields); credentialsDir (tenants) and urlFile (notifiers) are
+derived from it. `omit` returns a copy, so .Values is never mutated.
+`notifiers` is only rendered when non-empty.
 */}}
 {{- define "betbot.config" -}}
 {{- $tenants := list -}}
@@ -56,5 +57,26 @@ so .Values is never mutated.
 {{- end -}}
 {{- $tenants = append $tenants $t -}}
 {{- end -}}
-{{- toYaml (dict "tenantTimeoutSeconds" .Values.config.tenantTimeoutSeconds "tenants" $tenants) -}}
+{{- $notifiers := list -}}
+{{- range .Values.config.notifiers -}}
+{{- $n := omit . "existingSecret" -}}
+{{- if not (mustRegexMatch "^[A-Za-z0-9][A-Za-z0-9._-]*$" .name) -}}
+{{- fail (printf "notifier name %q is not usable as a mount path component (allowed: [A-Za-z0-9._-], must start alphanumeric)" .name) -}}
+{{- end -}}
+{{- if and .existingSecret .urlFile -}}
+{{- fail (printf "notifier %q: set either existingSecret or urlFile, not both" .name) -}}
+{{- end -}}
+{{- if and (not .existingSecret) (not .urlFile) -}}
+{{- fail (printf "notifier %q: existingSecret (or urlFile) is required" .name) -}}
+{{- end -}}
+{{- if .existingSecret -}}
+{{- $_ := set $n "urlFile" (printf "/notifiers/%s/url" .name) -}}
+{{- end -}}
+{{- $notifiers = append $notifiers $n -}}
+{{- end -}}
+{{- $config := dict "tenantTimeoutSeconds" .Values.config.tenantTimeoutSeconds "tenants" $tenants -}}
+{{- if $notifiers -}}
+{{- $_ := set $config "notifiers" $notifiers -}}
+{{- end -}}
+{{- toYaml $config -}}
 {{- end }}

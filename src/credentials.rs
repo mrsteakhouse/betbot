@@ -10,6 +10,10 @@ use thiserror::Error;
 pub struct Secret(String);
 
 impl Secret {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
     pub fn expose(&self) -> &str {
         &self.0
     }
@@ -92,6 +96,16 @@ pub async fn load(dir: &Path) -> Result<Credentials, CredentialsError> {
     Credentials::from_parts(username, password)
 }
 
+/// Loads a single secret value (e.g. a notifier URL) from `path`, with one
+/// trailing newline removed. `what` names the value in errors.
+pub async fn load_secret(path: &Path, what: &'static str) -> Result<Secret, CredentialsError> {
+    let value = trim_one_newline(read_file(path.to_path_buf()).await?);
+    if value.is_empty() {
+        return Err(CredentialsError::Empty(what));
+    }
+    Ok(Secret(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +144,20 @@ mod tests {
             assert!(!s.contains("test-user"), "{s}");
             assert!(!s.contains("hunter2"), "{s}");
         }
+    }
+
+    #[tokio::test]
+    async fn load_secret_trims_and_rejects_empty() {
+        let dir = std::env::temp_dir().join(format!("betbot-secret-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("url");
+        std::fs::write(&path, "ntfy://example.test/topic\n").unwrap();
+        let s = load_secret(&path, "url").await.unwrap();
+        assert_eq!(s.expose(), "ntfy://example.test/topic");
+        std::fs::write(&path, "\n").unwrap();
+        let err = load_secret(&path, "url").await.unwrap_err();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(matches!(err, CredentialsError::Empty("url")));
     }
 
     #[tokio::test]

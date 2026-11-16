@@ -4,16 +4,19 @@ mod algorithm;
 mod config;
 mod credentials;
 mod domain;
+mod notify;
 mod odds;
 mod platform;
 mod rules;
 mod runner;
+#[cfg(test)]
+mod testutil;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -88,6 +91,31 @@ async fn shutdown_signal() -> &'static str {
     }
 }
 
+/// `--check-config`: parses the notifier URL files that exist (no network).
+/// Missing files are skipped, since the Secrets are usually not mounted
+/// where the config is checked. Returns false if any existing file is
+/// unreadable or holds an invalid URL.
+async fn check_notifier_urls(config: &config::Config) -> bool {
+    let mut ok = true;
+    for n in &config.notifiers {
+        let result = match credentials::load_secret(&n.url_file, "notifier url").await {
+            Err(credentials::CredentialsError::Read { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                debug!(notifier = %n.name, "notifier url file not found, not checked");
+                continue;
+            }
+            Err(e) => Err(notify::NotifyError::from(e)),
+            Ok(url) => notify::validate_url(&url),
+        };
+        if let Err(e) = result {
+            error!(notifier = %n.name, error = %e, "invalid notifier");
+            ok = false;
+        }
+    }
+    ok
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -102,7 +130,11 @@ async fn main() -> ExitCode {
     };
     let tenants: Vec<&str> = config.tenants.iter().map(|t| t.name.as_str()).collect();
     if cli.check_config {
-        info!(tenants = ?tenants, "configuration is valid");
+        if !check_notifier_urls(&config).await {
+            return ExitCode::from(2);
+        }
+        let notifiers: Vec<&str> = config.notifiers.iter().map(|n| n.name.as_str()).collect();
+        info!(tenants = ?tenants, notifiers = ?notifiers, "configuration is valid");
         return ExitCode::SUCCESS;
     }
     info!(

@@ -45,13 +45,31 @@ affinity: {}
 # Requires a CNI/controller that enforces NetworkPolicy (k3s: kube-router does).
 networkPolicy:
   enabled: false
+  # Additional egress rules, rendered verbatim (e.g. a self-hosted ntfy or
+  # generic webhook on another port):
+  #   - to: [{ ipBlock: { cidr: 10.0.0.5/32 } }]
+  #     ports: [{ protocol: TCP, port: 8080 }]
+  extraEgress: []
 
 # Rendered 1:1 into the app config (config.yaml), except per tenant:
 #   existingSecret  chart-only: name of a Secret with the keys `username` and
 #                   `password`. Mounted at /secrets/<tenant name>, and
 #                   credentialsDir is set automatically. Removed from the app config.
-# Credentials never belong in values. Create the Secret yourself (see NOTES / README).
+# and per notifier:
+#   existingSecret  chart-only: name of a Secret with the key `url` (shoutrrr-style
+#                   notifier URL, e.g. telegram://..., discord://..., ntfy://...,
+#                   generic://...). Mounted at /notifiers/<notifier name>/url, and
+#                   urlFile is set automatically. Removed from the app config.
+# Credentials and notifier URLs never belong in values. Create the Secrets
+# yourself (see NOTES / README).
 config:
   tenantTimeoutSeconds: 300
-  # Required, at least one tenant. Example in README.md.
+  # Required, at least one tenant. Example in README.md. A tenant references
+  # notifiers by name: `notifiers: [telegram-main]`.
   tenants: []
+  # Optional notification targets, e.g.
+  #   - name: telegram-main
+  #     existingSecret: betbot-notify-telegram
+  # Each referencing tenant gets one summary per run, only when tips were
+  # submitted, warnings occurred or the tenant failed.
+  notifiers: []

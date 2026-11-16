@@ -24,6 +24,18 @@ pub struct Config {
     #[serde(default = "default_tenant_timeout")]
     pub tenant_timeout_seconds: u64,
     pub tenants: Vec<TenantConfig>,
+    /// Notification targets, referenced by name from tenants.
+    #[serde(default)]
+    pub notifiers: Vec<NotifierConfig>,
+}
+
+/// A notification target. The URL (shoutrrr style, carries tokens) is only
+/// read from `urlFile` (Secret volume mount), never inlined in the config.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NotifierConfig {
+    pub name: String,
+    pub url_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -44,6 +56,9 @@ pub struct TenantConfig {
     pub rules: Rules,
     #[serde(default)]
     pub overwrite_existing_tips: bool,
+    /// Names of notifiers (from `notifiers`) that receive the run summary.
+    #[serde(default)]
+    pub notifiers: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -80,6 +95,21 @@ impl Config {
         }
         if self.tenant_timeout_seconds == 0 {
             return invalid("tenantTimeoutSeconds must be greater than 0".into());
+        }
+        let mut notifiers = HashSet::new();
+        for n in &self.notifiers {
+            if n.name.is_empty() || n.name.trim() != n.name {
+                return invalid(format!(
+                    "notifier name {:?} must be non-empty without surrounding whitespace",
+                    n.name
+                ));
+            }
+            if !notifiers.insert(n.name.as_str()) {
+                return invalid(format!("duplicate notifier name {:?}", n.name));
+            }
+            if n.url_file.as_os_str().is_empty() {
+                return invalid(format!("notifier {:?}: urlFile is empty", n.name));
+            }
         }
         let mut names = HashSet::new();
         for t in &self.tenants {
@@ -129,6 +159,18 @@ impl Config {
                 && f.fixture.as_os_str().is_empty()
             {
                 return invalid(format!("tenant {:?}: platform.fixture is empty", t.name));
+            }
+            let mut refs = HashSet::new();
+            for r in &t.notifiers {
+                if !notifiers.contains(r.as_str()) {
+                    return invalid(format!("tenant {:?}: unknown notifier {:?}", t.name, r));
+                }
+                if !refs.insert(r.as_str()) {
+                    return invalid(format!(
+                        "tenant {:?}: notifier {:?} referenced twice",
+                        t.name, r
+                    ));
+                }
             }
         }
         Ok(())
@@ -188,6 +230,50 @@ mod tests {
         assert!(!t.overwrite_existing_tips);
         assert!(t.credentials_dir.is_none());
         assert!(t.rules.max_same_result.is_none());
+        assert!(t.notifiers.is_empty());
+        assert!(c.notifiers.is_empty());
+    }
+
+    fn with_notifiers(notifiers: &str, tenant_refs: &str) -> String {
+        format!(
+            "notifiers:\n{notifiers}tenants:\n  - name: a\n    platform: {{ type: fake, fixture: f.yaml }}\n    notifiers: {tenant_refs}\n"
+        )
+    }
+
+    #[test]
+    fn notifiers_parse() {
+        let c = parse(&with_notifiers(
+            "  - { name: tg, urlFile: /notifiers/tg/url }\n  - { name: unused, urlFile: /n/u }\n",
+            "[tg]",
+        ))
+        .unwrap();
+        assert_eq!(c.notifiers.len(), 2);
+        assert_eq!(c.notifiers[0].name, "tg");
+        assert_eq!(c.notifiers[0].url_file, Path::new("/notifiers/tg/url"));
+        assert_eq!(c.tenants[0].notifiers, ["tg"]);
+    }
+
+    #[test]
+    fn notifiers_invalid() {
+        let tg = "  - { name: tg, urlFile: /n/tg }\n";
+        assert_invalid(&with_notifiers(tg, "[x]"));
+        assert_invalid(&with_notifiers(tg, "[tg, tg]"));
+        assert_invalid(&with_notifiers(&format!("{tg}{tg}"), "[tg]"));
+        assert_invalid(&with_notifiers("  - { name: tg, urlFile: '' }\n", "[]"));
+        assert_invalid(&with_notifiers("  - { name: ' tg', urlFile: /n }\n", "[]"));
+        assert_invalid(&minimal("    notifiers: [tg]\n"));
+    }
+
+    #[test]
+    fn notifier_inline_url_rejected() {
+        assert_parse_err(&with_notifiers(
+            "  - { name: tg, url: 'telegram://1:x@telegram?chats=1' }\n",
+            "[tg]",
+        ));
+        assert_parse_err(&with_notifiers(
+            "  - { name: tg, urlFile: /n, url: 'ntfy://h/t' }\n",
+            "[tg]",
+        ));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Orchestrates one run: per tenant login, fetch matches/history/odds, rank,
 //! apply rules and submit.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -10,10 +10,14 @@ use tracing::{Instrument, debug, error, info, info_span, warn};
 use crate::algorithm::{self, TipAlgorithm};
 use crate::config::{Config, TenantConfig};
 use crate::credentials::{self, CredentialsError};
-use crate::domain::{Match, MatchId, OpenMatch, PlacedTip, ScoringScheme, TipSubmission};
+use crate::domain::{Match, MatchId, OpenMatch, PlacedTip, ScoringScheme, Tip, TipSubmission};
+use crate::notify::{self, Notifier, Notify, NotifyError};
 use crate::odds::{OddsError, OddsProvider, OddsSource};
 use crate::platform::{Platform, PlatformError, TipPlatform};
-use crate::rules::{MatchChoice, Rules};
+use crate::rules::{MatchChoice, Rules, Violation};
+
+/// Upper bound for one notification send (outside the tenant timeout).
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy)]
 pub struct RunOptions {
@@ -29,6 +33,33 @@ pub struct TenantReport {
     pub skipped: usize,
     pub violations: usize,
     pub dry_run: bool,
+    /// Matchdays of the tip window (sorted, unique).
+    pub matchdays: Vec<u32>,
+    /// The `submitted` tips, in submission order.
+    pub tips: Vec<ReportedTip>,
+    /// Skipped matches and unsatisfiable rules.
+    pub warnings: Vec<TenantWarning>,
+}
+
+/// A tip chosen in this run (submitted, or would-be submitted in a dry run).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReportedTip {
+    pub matchday: u32,
+    pub home: String,
+    pub away: String,
+    pub tip: Tip,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TenantWarning {
+    /// A match of the tip window was not tipped.
+    Skipped {
+        home: String,
+        away: String,
+        reason: String,
+    },
+    /// `maxSameResult` cannot be satisfied (best tips kept).
+    MaxSameResult(Violation),
 }
 
 #[derive(Debug, Error)]
@@ -101,10 +132,16 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
             skipped: 0,
             violations: 0,
             dry_run: opts.dry_run,
+            matchdays: Vec::new(),
+            tips: Vec::new(),
+            warnings: Vec::new(),
         });
     }
 
     let window: Vec<u32> = open.iter().map(|m| m.fixture.matchday).collect();
+    let mut matchdays = window.clone();
+    matchdays.sort_unstable();
+    matchdays.dedup();
     let mut fixed: Vec<PlacedTip> = Vec::new();
     let mut todo: Vec<Match> = Vec::new();
     for m in open {
@@ -151,15 +188,24 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
     let odds_map = odds.odds(&todo).await?;
     let mut choices = Vec::new();
     let mut skipped = 0;
+    let mut warnings = Vec::new();
+    let mut skip = |m: &Match, reason: String| {
+        skipped += 1;
+        warnings.push(TenantWarning::Skipped {
+            home: m.home.clone(),
+            away: m.away.clone(),
+            reason,
+        });
+    };
     for m in &todo {
         let Some(o) = odds_map.get(&m.id) else {
             warn!(match_id = %m.id, home = %m.home, away = %m.away, "no odds, skipping match");
-            skipped += 1;
+            skip(m, "keine Quoten".into());
             continue;
         };
         if let Err(e) = o.validate() {
             warn!(match_id = %m.id, home = %m.home, away = %m.away, error = %e, "skipping match");
-            skipped += 1;
+            skip(m, e.to_string());
             continue;
         }
         match algorithm.rank(m, o, scoring) {
@@ -170,12 +216,12 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
             }),
             Ok(_) => {
                 warn!(match_id = %m.id, algorithm = algorithm.name(), "no candidates, skipping match");
-                skipped += 1;
+                skip(m, "keine Tipp-Kandidaten".into());
             }
             Err(e) => {
                 warn!(match_id = %m.id, home = %m.home, away = %m.away,
                       algorithm = algorithm.name(), error = %e, "skipping match");
-                skipped += 1;
+                skip(m, e.to_string());
             }
         }
     }
@@ -189,7 +235,9 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
             max = v.max,
             "rule maxSameResult cannot be satisfied"
         );
+        warnings.push(TenantWarning::MaxSameResult(v.clone()));
     }
+    let mut tips = Vec::with_capacity(report.assignments.len());
     for a in &report.assignments {
         let fixture = todo.iter().find(|m| m.id == a.match_id);
         info!(
@@ -201,6 +249,12 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
             rank = a.rank,
             "tip chosen"
         );
+        tips.push(ReportedTip {
+            matchday: fixture.map_or(0, |m| m.matchday),
+            home: fixture.map_or_else(String::new, |m| m.home.clone()),
+            away: fixture.map_or_else(String::new, |m| m.away.clone()),
+            tip: a.tip,
+        });
     }
 
     let submissions: Vec<TipSubmission> = report
@@ -226,6 +280,9 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
         skipped,
         violations: report.violations.len(),
         dry_run: opts.dry_run,
+        matchdays,
+        tips,
+        warnings,
     })
 }
 
@@ -271,12 +328,91 @@ where
     }
 }
 
-/// Runs all tenants sequentially, in config order.
+/// Builds the notifiers referenced by at least one tenant. A notifier whose
+/// URL file cannot be read or parsed is disabled with a warning; this never
+/// fails the run.
+async fn build_notifiers(config: &Config) -> HashMap<String, Notifier> {
+    let referenced: HashSet<&str> = config
+        .tenants
+        .iter()
+        .flat_map(|t| t.notifiers.iter().map(String::as_str))
+        .collect();
+    let mut notifiers = HashMap::new();
+    if referenced.is_empty() {
+        return notifiers;
+    }
+    let client = match notify::http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "cannot create HTTP client, notifications disabled");
+            return notifiers;
+        }
+    };
+    for n in &config.notifiers {
+        if !referenced.contains(n.name.as_str()) {
+            continue;
+        }
+        let built = match credentials::load_secret(&n.url_file, "notifier url").await {
+            Ok(url) => Notifier::from_url(&url, client.clone()),
+            Err(e) => Err(NotifyError::from(e)),
+        };
+        match built {
+            Ok(notifier) => {
+                debug!(notifier = %n.name, kind = notifier.kind(), "notifier ready");
+                notifiers.insert(n.name.clone(), notifier);
+            }
+            Err(e) => warn!(notifier = %n.name, error = %e, "notifier disabled"),
+        }
+    }
+    notifiers
+}
+
+/// Sends the tenant's run summary to its notifiers (if there is anything to
+/// report). Failures are logged only; they never change the run outcome.
+async fn notify_tenant(
+    tenant: &str,
+    result: &Result<TenantReport, TenantError>,
+    refs: &[String],
+    notifiers: &HashMap<String, Notifier>,
+    dry_run: bool,
+) {
+    if refs.is_empty() {
+        return;
+    }
+    let Some(msg) = notify::message::summary(tenant, result, dry_run) else {
+        debug!("nothing to notify");
+        return;
+    };
+    for name in refs {
+        if dry_run {
+            info!(notifier = %name, title = %msg.title, body = %msg.body, "dry run: would notify");
+            continue;
+        }
+        let Some(notifier) = notifiers.get(name) else {
+            debug!(notifier = %name, "notifier disabled, skipping");
+            continue;
+        };
+        match tokio::time::timeout(NOTIFY_TIMEOUT, notifier.send(&msg)).await {
+            Ok(Ok(())) => info!(notifier = %name, "notification sent"),
+            Ok(Err(e)) => warn!(notifier = %name, error = %e, "notification failed"),
+            Err(_elapsed) => warn!(
+                notifier = %name,
+                timeout_seconds = NOTIFY_TIMEOUT.as_secs(),
+                "notification failed: timed out"
+            ),
+        }
+    }
+}
+
+/// Runs all tenants sequentially, in config order, and sends each tenant's
+/// summary to its notifiers.
 pub async fn run_all(config: Config, dry_run: bool) -> Vec<TenantOutcome> {
     let timeout_seconds = config.tenant_timeout_seconds;
+    let notifiers = build_notifiers(&config).await;
     let mut outcomes = Vec::with_capacity(config.tenants.len());
     for tenant in config.tenants {
         let name = tenant.name.clone();
+        let refs = tenant.notifiers.clone();
         let span = info_span!("tenant", tenant = %name);
         let result = supervise(
             timeout_seconds,
@@ -294,6 +430,9 @@ pub async fn run_all(config: Config, dry_run: bool) -> Vec<TenantOutcome> {
             ),
             Err(e) => error!(error = %e, "tenant failed"),
         });
+        notify_tenant(&name, &result, &refs, &notifiers, dry_run)
+            .instrument(span)
+            .await;
         outcomes.push(TenantOutcome { name, result });
     }
     outcomes
@@ -310,6 +449,7 @@ mod tests {
     use crate::platform::fake::{FakeData, FakeMatch, FakePlatform};
     use crate::platform::{FakeConfig, HistoryScope, KicktippConfig, PlatformConfig};
     use crate::rules::{MaxSameResult, Scope};
+    use crate::testutil::http_mock::{MockServer, Response};
 
     fn odds(home: f64, draw: f64, away: f64) -> Odds {
         Odds {
@@ -796,6 +936,7 @@ mod tests {
             scoring: Default::default(),
             rules: Default::default(),
             overwrite_existing_tips: false,
+            notifiers: Vec::new(),
         }
     }
 
@@ -814,6 +955,7 @@ mod tests {
                     Some(PathBuf::from("/nonexistent/betbot-test")),
                 ),
             ],
+            notifiers: Vec::new(),
         };
         let outcomes = run_all(config, true).await;
         assert_eq!(outcomes.len(), 2);
@@ -824,6 +966,168 @@ mod tests {
             outcomes[1].result,
             Err(TenantError::Credentials(_))
         ));
+    }
+
+    /// Temp dir with a fake fixture and a generic notifier URL file.
+    struct NotifyEnv {
+        dir: PathBuf,
+    }
+
+    impl NotifyEnv {
+        fn new(tag: &str, fixture: &str, url: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("betbot-notify-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("fixture.yaml"), fixture).unwrap();
+            std::fs::write(dir.join("url"), format!("{url}\n")).unwrap();
+            Self { dir }
+        }
+
+        fn config(&self, url_file: PathBuf) -> Config {
+            let mut t = tenant(
+                "alice",
+                PlatformConfig::Fake(FakeConfig {
+                    fixture: self.dir.join("fixture.yaml"),
+                }),
+                None,
+            );
+            t.notifiers = vec!["hook".into()];
+            Config {
+                tenant_timeout_seconds: 30,
+                tenants: vec![t],
+                notifiers: vec![crate::config::NotifierConfig {
+                    name: "hook".into(),
+                    url_file,
+                }],
+            }
+        }
+
+        fn url_file(&self) -> PathBuf {
+            self.dir.join("url")
+        }
+    }
+
+    impl Drop for NotifyEnv {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn generic_url(server: &MockServer) -> String {
+        let b = server.base();
+        format!(
+            "generic://{}:{}/hook?disabletls=yes",
+            b.host_str().unwrap(),
+            b.port().unwrap()
+        )
+    }
+
+    fn example_fixture() -> String {
+        std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/fake-data.yaml"),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn run_all_notifies_once_after_submitting() {
+        let server = MockServer::start(|_| Response::ok("")).await;
+        let env = NotifyEnv::new("submit", &example_fixture(), &generic_url(&server));
+        let outcomes = run_all(env.config(env.url_file()), false).await;
+        assert!(outcomes[0].result.is_ok(), "{:?}", outcomes[0].result);
+        let reqs = server.requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].path(), "/hook");
+        assert!(
+            reqs[0]
+                .body
+                .contains("betbot alice: Spieltag 12 – 2 Tipps abgegeben"),
+            "{}",
+            reqs[0].body
+        );
+        assert!(reqs[0].body.contains("FC Nordstadt - SV Südhafen"));
+    }
+
+    #[tokio::test]
+    async fn run_all_sends_nothing_when_nothing_to_do() {
+        let server = MockServer::start(|_| Response::ok("")).await;
+        let env = NotifyEnv::new("idle", "matches: []\n", &generic_url(&server));
+        let outcomes = run_all(env.config(env.url_file()), false).await;
+        assert!(outcomes[0].result.is_ok());
+        assert!(server.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_all_dry_run_does_not_send() {
+        let server = MockServer::start(|_| Response::ok("")).await;
+        let env = NotifyEnv::new("dry", &example_fixture(), &generic_url(&server));
+        let outcomes = run_all(env.config(env.url_file()), true).await;
+        assert!(outcomes[0].result.is_ok());
+        assert!(server.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_all_notifies_failure() {
+        let server = MockServer::start(|_| Response::ok("")).await;
+        let env = NotifyEnv::new("fail", "not: [valid", &generic_url(&server));
+        let outcomes = run_all(env.config(env.url_file()), false).await;
+        assert!(outcomes[0].result.is_err());
+        let reqs = server.requests();
+        assert_eq!(reqs.len(), 1);
+        assert!(
+            reqs[0].body.contains(r#""level":"error""#),
+            "{}",
+            reqs[0].body
+        );
+        assert!(reqs[0].body.contains("betbot alice: Fehler"));
+    }
+
+    #[tokio::test]
+    async fn notification_failures_do_not_change_outcome() {
+        let server = MockServer::start(|_| Response::status(500)).await;
+        let env = NotifyEnv::new("http500", &example_fixture(), &generic_url(&server));
+        let outcomes = run_all(env.config(env.url_file()), false).await;
+        assert!(outcomes[0].result.is_ok(), "{:?}", outcomes[0].result);
+        assert_eq!(server.requests().len(), 1);
+
+        // Unreadable URL file: notifier disabled, run unaffected.
+        let outcomes = run_all(env.config(env.dir.join("missing")), false).await;
+        assert!(outcomes[0].result.is_ok(), "{:?}", outcomes[0].result);
+        // Malformed URL: same.
+        std::fs::write(env.url_file(), "smtp://x").unwrap();
+        let outcomes = run_all(env.config(env.url_file()), false).await;
+        assert!(outcomes[0].result.is_ok(), "{:?}", outcomes[0].result);
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn report_carries_tips_and_warnings() {
+        let p = FakePlatform::new(FakeData {
+            matches: vec![
+                fake_match("m1", None, None),
+                fake_match("m2", Some(odds(3.8, 3.5, 1.95)), None),
+            ],
+            history: vec![],
+        });
+        let r = run(&p, &Rules::default(), opts(true, false)).await.unwrap();
+        assert_eq!(r.matchdays, [12]);
+        assert_eq!(
+            r.tips,
+            [ReportedTip {
+                matchday: 12,
+                home: "m2-home".into(),
+                away: "m2-away".into(),
+                tip: top_tip(&odds(3.8, 3.5, 1.95)),
+            }]
+        );
+        assert_eq!(
+            r.warnings,
+            [TenantWarning::Skipped {
+                home: "m1-home".into(),
+                away: "m1-away".into(),
+                reason: "keine Quoten".into(),
+            }]
+        );
     }
 
     #[tokio::test(start_paused = true)]

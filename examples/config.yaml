@@ -1,6 +1,18 @@
 # Example betbot configuration. In Kubernetes this file comes from a ConfigMap;
 # credentials are never part of it (see credentialsDir below).
 tenantTimeoutSeconds: 300
+
+# Notification targets (optional). The URL carries tokens and is only read from
+# urlFile (a mounted Secret), never written into this file. Formats:
+#   telegram://<bot id>:<secret>@telegram?chats=@channel,123456[&notification=no]
+#   discord://<webhook token>@<webhook id>
+#   ntfy://[[user]:password@]host[:port]/topic[?scheme=http&priority=3&tags=a,b]
+#   generic://[user:password@]host[:port]/path[?disabletls=yes&template=json|plain]
+# Tenants reference them by name (`notifiers: [...]`) and get one summary per
+# run, only when tips were submitted, warnings occurred or the tenant failed.
+# notifiers:
+#   - name: telegram-main
+#     urlFile: /notifiers/telegram-main/url
 tenants:
   # Offline tenant for local dry runs: matches, odds and tip history come from
   # a fixture file, nothing is sent anywhere.
@@ -37,3 +49,4 @@ tenants:
   #     # the bot logs it but the config is authoritative.
   #     maxSameResult: { max: 6, scope: matchday, mirrored: true }
   #   overwriteExistingTips: false
+  #   notifiers: [telegram-main]
