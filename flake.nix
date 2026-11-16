@@ -40,6 +40,9 @@
               pkgs.kubernetes-helm
               pkgs.chart-testing
               pkgs.kubectl
+              pkgs.yq-go
+              pkgs.actionlint
+              pkgs.shellcheck
             ];
 
             # rust-analyzer finds the std sources via the rust-src component.

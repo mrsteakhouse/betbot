@@ -13,7 +13,7 @@ Secrets that you create yourself; the chart never handles them.
 
 ## Install
 
-From the Helm repository (once published):
+From the Helm repository:
 
 ```sh
 helm repo add betbot https://mrsteakhouse.github.io/betbot
@@ -25,6 +25,11 @@ From a local checkout:
 ```sh
 helm install betbot charts/betbot -f my-values.yaml
 ```
+
+The chart version always equals the app version; `appVersion` is the default
+image tag (`ghcr.io/mrsteakhouse/betbot`). The chart is released together with
+the app by release-please, so the versions in `Chart.yaml` are not edited by
+hand.
 
 `config.tenants` must contain at least one tenant; installing with the default
 values fails schema validation on purpose.

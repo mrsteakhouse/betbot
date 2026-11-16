@@ -2,4 +2,5 @@ chart-dirs:
   - charts
 target-branch: main
 validate-maintainers: false
-check-version-increment: true
+# Versions are bumped by release-please in release PRs only.
+check-version-increment: false
