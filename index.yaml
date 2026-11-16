@@ -1,0 +1,23 @@
+apiVersion: v1
+entries:
+  betbot:
+  - apiVersion: v2
+    appVersion: 0.3.0
+    created: "2026-11-16T11:14:39.480594267Z"
+    description: Tipping bot (Tippspiel, kicktipp.de first) running as a Kubernetes
+      CronJob
+    digest: 182fcf8b829f4f9ce924de481dd820a122ff7f79735eea8f81b2841258740580
+    home: https://github.com/mrsteakhouse/betbot
+    keywords:
+    - tippspiel
+    - kicktipp
+    - bundesliga
+    - cronjob
+    name: betbot
+    sources:
+    - https://github.com/mrsteakhouse/betbot
+    type: application
+    urls:
+    - https://github.com/mrsteakhouse/betbot/releases/download/betbot-0.3.0/betbot-0.3.0.tgz
+    version: 0.3.0
+generated: "2026-11-16T11:14:39.480598985Z"
