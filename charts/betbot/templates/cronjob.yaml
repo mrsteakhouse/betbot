@@ -92,6 +92,13 @@ spec:
                   readOnly: true
                 {{- end }}
                 {{- end }}
+                {{- range $i, $n := .Values.config.notifiers }}
+                {{- if $n.existingSecret }}
+                - name: notifier-{{ $i }}
+                  mountPath: {{ printf "/notifiers/%s" $n.name | quote }}
+                  readOnly: true
+                {{- end }}
+                {{- end }}
           volumes:
             - name: config
               configMap:
@@ -108,6 +115,18 @@ spec:
                     path: username
                   - key: password
                     path: password
+            {{- end }}
+            {{- end }}
+            {{- range $i, $n := .Values.config.notifiers }}
+            {{- if $n.existingSecret }}
+            - name: notifier-{{ $i }}
+              secret:
+                secretName: {{ $n.existingSecret | quote }}
+                # 288 decimal = 0440 octal; group = fsGroup 65532.
+                defaultMode: 288
+                items:
+                  - key: url
+                    path: url
             {{- end }}
             {{- end }}
           {{- with .Values.nodeSelector }}

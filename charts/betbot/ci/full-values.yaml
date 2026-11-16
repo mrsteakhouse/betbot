@@ -3,6 +3,9 @@ suspend: true
 logLevel: "info,betbot=debug"
 networkPolicy:
   enabled: true
+  extraEgress:
+    - to: [{ipBlock: {cidr: 10.0.0.5/32}}]
+      ports: [{protocol: TCP, port: 8080}]
 podLabels: {team: tips}
 podAnnotations: {example.com/note: x}
 nodeSelector: {kubernetes.io/arch: arm64}
@@ -11,3 +14,7 @@ config:
     - name: bob.test-1
       existingSecret: betbot-bob
       platform: {type: kicktipp, community: Other_round-2}
+      notifiers: [notify-main]
+  notifiers:
+    - name: notify-main
+      existingSecret: betbot-notify

@@ -8,6 +8,17 @@ create the Secret in namespace {{ .Release.Namespace }} yourself (keys: username
     --from-file=password=./password.txt
 {{ end }}{{ end }}
 (One trailing newline in the files is tolerated by betbot.)
+{{- with .Values.config.notifiers }}
+
+Notifier URLs carry tokens and are NOT managed by this chart either. For every
+notifier with `existingSecret`, create the Secret yourself (key: url) from a
+file holding the URL (e.g. telegram://<bot id>:<secret>@telegram?chats=<chat id>):
+{{ range . }}{{ if .existingSecret }}
+  kubectl -n {{ $.Release.Namespace }} create secret generic {{ .existingSecret }} \
+    --from-file=url=./notifier-url.txt
+{{ end }}{{ end }}
+A missing or invalid notifier URL only disables that notifier (warning in the log).
+{{- end }}
 
 Trigger a run now (uses the CronJob's arguments, so --dry-run is only active if
 you installed with `--set dryRun=true`):

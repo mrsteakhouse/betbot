@@ -60,3 +60,68 @@ fn check_config_rejects_unknown_field_like_existing_secret() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
+
+/// Runs `--check-config` on `config` (with `{dir}` replaced by a temp dir
+/// that holds `files`) and returns the exit code.
+fn check(tag: &str, config: &str, files: &[(&str, &str)]) -> Option<i32> {
+    let dir =
+        std::env::temp_dir().join(format!("betbot-check-config-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, content) in files {
+        std::fs::write(dir.join(name), content).unwrap();
+    }
+    let path = dir.join("config.yaml");
+    std::fs::write(&path, config.replace("{dir}", dir.to_str().unwrap())).unwrap();
+    let out = betbot()
+        .arg("--config")
+        .arg(&path)
+        .arg("--check-config")
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    out.status.code()
+}
+
+const NOTIFIER_CONFIG: &str = "notifiers:
+  - name: hook
+    urlFile: {dir}/url
+tenants:
+  - name: a
+    platform: { type: fake, fixture: f.yaml }
+    notifiers: [hook]
+";
+
+#[test]
+fn check_config_notifiers() {
+    // URL file not mounted: not checked.
+    assert_eq!(check("n-missing", NOTIFIER_CONFIG, &[]), Some(0));
+    assert_eq!(
+        check(
+            "n-valid",
+            NOTIFIER_CONFIG,
+            &[("url", "ntfy://ntfy.example.test/betbot\n")]
+        ),
+        Some(0)
+    );
+    assert_eq!(
+        check("n-scheme", NOTIFIER_CONFIG, &[("url", "smtp://x\n")]),
+        Some(2)
+    );
+    assert_eq!(
+        check(
+            "n-bad",
+            NOTIFIER_CONFIG,
+            &[("url", "telegram://x@telegram\n")]
+        ),
+        Some(2)
+    );
+    assert_eq!(check("n-empty", NOTIFIER_CONFIG, &[("url", "\n")]), Some(2));
+    assert_eq!(
+        check(
+            "n-unknown",
+            &NOTIFIER_CONFIG.replace("[hook]", "[other]"),
+            &[]
+        ),
+        Some(2)
+    );
+}

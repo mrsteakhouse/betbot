@@ -1,8 +1,6 @@
 //! kicktipp.de platform: logs in with the form login, reads matches, tips and
 //! odds from the tip page (`/<community>/tippabgabe`) and submits the tip form.
 
-#[cfg(test)]
-mod mock;
 mod parse;
 #[cfg(test)]
 mod testutil;
@@ -332,10 +330,10 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex as StdMutex;
 
-    use super::mock::{MockServer, Request, Response};
     use super::testutil::*;
     use super::*;
     use crate::domain::{MatchId, Tip};
+    use crate::testutil::http_mock::{MockServer, Request, Response};
 
     fn platform_for(server: &MockServer) -> KicktippPlatform {
         let creds = Credentials::from_parts("test-user".into(), "hunter2".into()).unwrap();

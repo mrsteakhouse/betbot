@@ -4,16 +4,19 @@ mod algorithm;
 mod config;
 mod credentials;
 mod domain;
+mod notify;
 mod odds;
 mod platform;
 mod rules;
 mod runner;
+#[cfg(test)]
+mod testutil;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -35,6 +38,10 @@ struct Cli {
     /// Parse and validate the config, then exit (0 valid, 2 invalid). No network access.
     #[arg(long)]
     check_config: bool,
+    /// Send a test message to every configured notifier, then exit
+    /// (0 all sent, 1 a send failed, 2 config/URL file invalid). No platform access.
+    #[arg(long, conflicts_with_all = ["check_config", "dry_run"])]
+    test_notifiers: bool,
     /// Log output format.
     #[arg(long, env = "BETBOT_LOG_FORMAT", value_enum, default_value_t = LogFormat::Text)]
     log_format: LogFormat,
@@ -88,6 +95,104 @@ async fn shutdown_signal() -> &'static str {
     }
 }
 
+/// `--check-config`: parses the notifier URL files that exist (no network).
+/// Missing files are skipped, since the Secrets are usually not mounted
+/// where the config is checked. Returns false if any existing file is
+/// unreadable or holds an invalid URL.
+async fn check_notifier_urls(config: &config::Config) -> bool {
+    let mut ok = true;
+    for n in &config.notifiers {
+        let result = match credentials::load_secret(&n.url_file, "notifier url").await {
+            Err(credentials::CredentialsError::Read { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                debug!(notifier = %n.name, "notifier url file not found, not checked");
+                continue;
+            }
+            Err(e) => Err(notify::NotifyError::from(e)),
+            Ok(url) => notify::validate_url(&url),
+        };
+        if let Err(e) = result {
+            error!(notifier = %n.name, error = %e, "invalid notifier");
+            ok = false;
+        }
+    }
+    ok
+}
+
+/// `--test-notifiers`: sends a test message to every configured notifier
+/// (referenced or not). Only notifier name and kind are logged, never the URL.
+/// Exit 2 if no notifier is configured or one cannot be built, 1 if a send
+/// fails or times out, 0 otherwise.
+async fn test_notifiers(config: &config::Config) -> ExitCode {
+    use notify::Notify as _;
+
+    if config.notifiers.is_empty() {
+        error!("no notifiers configured");
+        return ExitCode::from(2);
+    }
+    let client = match notify::http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "cannot create http client");
+            return ExitCode::from(2);
+        }
+    };
+    let total = config.notifiers.len();
+    let (mut sent, mut build_errors, mut send_errors) = (0usize, 0usize, 0usize);
+    for n in &config.notifiers {
+        let name = n.name.as_str();
+        let notifier = match credentials::load_secret(&n.url_file, "notifier url").await {
+            Err(e) => Err(notify::NotifyError::from(e)),
+            Ok(url) => notify::Notifier::from_url(&url, client.clone()),
+        };
+        let notifier = match notifier {
+            Ok(n) => n,
+            Err(e) => {
+                error!(notifier = %name, error = %e, "cannot build notifier");
+                build_errors += 1;
+                continue;
+            }
+        };
+        let kind = notifier.kind();
+        let msg = notify::test_message(name);
+        match tokio::time::timeout(notify::SEND_TIMEOUT, notifier.send(&msg)).await {
+            Ok(Ok(())) => {
+                info!(notifier = %name, kind, "test message sent");
+                sent += 1;
+            }
+            Ok(Err(e)) => {
+                error!(notifier = %name, kind, error = %e, "sending test message failed");
+                send_errors += 1;
+            }
+            Err(_elapsed) => {
+                error!(
+                    notifier = %name,
+                    kind,
+                    timeout_seconds = notify::SEND_TIMEOUT.as_secs(),
+                    "sending test message failed: timed out"
+                );
+                send_errors += 1;
+            }
+        }
+    }
+    if build_errors > 0 || send_errors > 0 {
+        error!(
+            total,
+            sent, build_errors, send_errors, "notifier test finished with failures"
+        );
+    } else {
+        info!(total, sent, "notifier test finished");
+    }
+    if build_errors > 0 {
+        ExitCode::from(2)
+    } else if send_errors > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -100,9 +205,16 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if cli.test_notifiers {
+        return test_notifiers(&config).await;
+    }
     let tenants: Vec<&str> = config.tenants.iter().map(|t| t.name.as_str()).collect();
     if cli.check_config {
-        info!(tenants = ?tenants, "configuration is valid");
+        if !check_notifier_urls(&config).await {
+            return ExitCode::from(2);
+        }
+        let notifiers: Vec<&str> = config.notifiers.iter().map(|n| n.name.as_str()).collect();
+        info!(tenants = ?tenants, notifiers = ?notifiers, "configuration is valid");
         return ExitCode::SUCCESS;
     }
     info!(

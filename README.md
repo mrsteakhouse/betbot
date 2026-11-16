@@ -76,6 +76,9 @@ tenants:
 | `tenants[].rules.maxSameResult.scope` | – | `matchday` or `season`. |
 | `tenants[].rules.maxSameResult.mirrored` | `true` | Count 2:1 and 1:2 as the same result. |
 | `tenants[].overwriteExistingTips` | `false` | Replace tips that are already placed (e.g. manual ones). |
+| `tenants[].notifiers` | `[]` | Names of notifiers that receive this tenant's run summary (see [Notifications](#notifications)). |
+| `notifiers[].name` | – | Unique notifier name. |
+| `notifiers[].urlFile` | – | File with the notifier URL (a mounted Secret). |
 
 Match the scoring scheme and rules to your round's settings. kicktipp shows a
 result limit as "Strategieverbot Ergebnis (max. 6/9 Tipps mit gleichem
@@ -85,10 +88,90 @@ Ergebnis)" on the tip page, which corresponds to
 A complete example with an offline tenant is in
 [`examples/config.yaml`](examples/config.yaml).
 
+## Notifications
+
+betbot can send a short summary per tenant and run to Telegram, Discord,
+[ntfy](https://ntfy.sh) or any HTTP webhook. Notifiers are defined once and
+referenced by name from tenants:
+
+```yaml
+notifiers:
+  - name: telegram-main
+    urlFile: /notifiers/telegram-main/url   # mounted Secret, holds the URL
+tenants:
+  - name: alice
+    # ...
+    notifiers: [telegram-main]
+```
+
+The notifier URL (shoutrrr style) contains tokens, so it is only read from
+`urlFile` and never written into the config (an inline `url` key is rejected):
+
+| Service | URL |
+| --- | --- |
+| Telegram | `telegram://<bot id>:<secret>@telegram?chats=@channel,123456[&notification=no]` |
+| Discord | `discord://<webhook token>@<webhook id>` (from `https://discord.com/api/webhooks/<id>/<token>`) |
+| ntfy | `ntfy://[[user]:password@]host[:port]/topic[?scheme=http&priority=1..5&tags=a,b]` (`:token@` = access token) |
+| Webhook | `generic://[user:password@]host[:port]/path[?disabletls=yes&template=json\|plain&titlekey=title&messagekey=message]` |
+
+Values in the URL must be percent-encoded where needed (e.g. `@` in a
+password as `%40`). The generic webhook POSTs `{"title", "message", "level"}`
+as JSON (or title and text as `text/plain` with `template=plain`) to
+`https://host/path`; other query parameters are passed on to the target.
+
+**What is sent:** exactly one message per tenant and run, in German: the
+matchday (plus postponed matches of earlier matchdays), one line per submitted
+tip (`FC Nordstadt - SV Südhafen  2:1`) and the status: all fine, the warnings
+(matches without odds, unsatisfiable rules) or the error. The title shows the
+status, e.g. `betbot alice: Spieltag 12 – 9 Tipps abgegeben`, `… – Warnungen`
+or `betbot alice: Fehler`.
+
+**When:** only if at least one tip was submitted, a warning occurred or the
+tenant failed. A run with nothing to do (no open matches, everything already
+tipped) sends nothing.
+
+- With `--dry-run` nothing is sent; the message is logged as
+  `dry run: would notify` instead.
+- A notifier whose URL file is missing or invalid is disabled with a warning;
+  a failed send (15 s limit) is logged. Neither changes the exit code.
+  `--check-config` validates the URL files that exist (no network).
+- A failed run is retried by Kubernetes (`backoffLimit`), so a persistent
+  failure may be reported up to three times.
+
+### Testing a notifier
+
+`--test-notifiers` sends one German test message ("betbot: Testnachricht")
+to every configured notifier, including notifiers no tenant references, and
+exits. It does not log in to any platform, reads no credentials and submits
+no tips. Unlike a normal run, failures are visible: each notifier is logged
+as sent or failed (by name and kind, never the URL) and the exit code is
+non-zero if any notifier failed. Run it locally with the same URL you put
+into the Secret (write it into the file with an editor, so the token stays
+out of your shell history):
+
+```yaml
+# config.yaml (a valid config still needs at least one tenant)
+notifiers:
+  - name: telegram-main
+    urlFile: ./notifier-url.txt
+tenants:
+  - name: alice
+    platform: { type: kicktipp, community: my-round-slug }
+    notifiers: [telegram-main]
+```
+
+```sh
+betbot --config config.yaml --test-notifiers
+```
+
+In the cluster the CronJob's arguments are fixed by the chart, so the test
+runs locally; testing in the cluster would need a one-off pod with the
+notifier Secret mounted.
+
 ## Command line
 
 ```text
-betbot --config <FILE> [--dry-run] [--check-config] [--log-format text|json]
+betbot --config <FILE> [--dry-run | --check-config | --test-notifiers] [--log-format text|json]
 ```
 
 | Flag | Env | Meaning |
@@ -96,11 +179,15 @@ betbot --config <FILE> [--dry-run] [--check-config] [--log-format text|json]
 | `--config` | `BETBOT_CONFIG` | Path to the YAML config. |
 | `--dry-run` | `BETBOT_DRY_RUN` | Compute and log the tips, but do not submit them. |
 | `--check-config` | – | Validate the config and exit, without network access. |
+| `--test-notifiers` | – | Send a test message to every configured notifier and exit. No platform access. |
 | `--log-format` | `BETBOT_LOG_FORMAT` | `text` (default) or `json`. |
 | – | `RUST_LOG` | Log filter, e.g. `info` (default) or `info,betbot=debug`. |
 
 Exit codes: `0` all tenants succeeded, `1` at least one tenant failed or the
 run was interrupted, `2` invalid config (Kubernetes does not retry it).
+With `--test-notifiers`: `0` all test messages sent, `1` a send failed or
+timed out (15 s), `2` no notifier configured or a URL file is missing,
+unreadable or invalid.
 
 ## Deployment with Helm
 
@@ -114,6 +201,14 @@ Images (`linux/amd64`, `linux/arm64`) are published to
    kubectl -n betbot create secret generic betbot-alice \
      --from-file=username=./username.txt \
      --from-file=password=./password.txt
+   ```
+
+   Optionally one Secret per notifier (key `url`), referenced in the values
+   as `config.notifiers: [{ name: telegram-main, existingSecret: betbot-notify }]`:
+
+   ```sh
+   kubectl -n betbot create secret generic betbot-notify \
+     --from-file=url=./notifier-url.txt
    ```
 
 2. Write a values file. The `config` block is rendered into the ConfigMap; per
@@ -164,6 +259,8 @@ Important chart values (all of them with comments in
 | `backoffLimit` | `2` | Retries after exit code 1; exit code 2 fails immediately. |
 | `activeDeadlineSeconds` | `1800` | Total runtime limit of a Job. |
 | `networkPolicy.enabled` | `false` | Allow only DNS and TCP 443 egress, no ingress. |
+| `networkPolicy.extraEgress` | `[]` | Extra egress rules, e.g. for a self-hosted ntfy on another port. |
+| `config.notifiers[].existingSecret` | – | Secret with the key `url`, mounted at `/notifiers/<name>/url` (`urlFile` is set automatically). |
 | `image.tag` | chart `appVersion` | Image version. |
 
 The pod runs as non-root (uid 65532) with a read-only root filesystem and no

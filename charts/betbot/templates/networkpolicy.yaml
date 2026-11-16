@@ -26,4 +26,8 @@ spec:
     # HTTPS to anywhere (kicktipp has no fixed IP)
     - ports:
         - { protocol: TCP, port: 443 }
+    {{- with .Values.networkPolicy.extraEgress }}
+    # Extra rules from values (e.g. a self-hosted ntfy on another port)
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}
