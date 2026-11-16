@@ -56,13 +56,17 @@ Special rules are configurable. Example: the same result (2:1 and 1:2 count as t
   - Image architectures: linux/amd64 + linux/arm64.
   - Default CronJob schedule: Monday + Friday 10:00 Europe/Berlin (`0 10 * * 1,5`).
   - Chart version == app version (both bumped by release-please); `appVersion` is the default image tag. Credentials only via user-created Secrets (keys `username`/`password`), never in values.
-- Open: license.
-- Next: push + one-time GitHub settings, first release; optimisation: for `scope: matchday` only read the current matchday as history.
+- Decided (2026-11-16): license `MIT OR Apache-2.0` (LICENSE-MIT, LICENSE-APACHE).
+- Done: first release v0.3.0 (image + chart published 2026-11-16).
+- Decided (2026-11-16): tip history is read per `HistoryScope`: `TipPlatform::placed_tips(scope)` with `Season` (all matchdays) or `Matchdays(window)` (platforms may return more, never less). `Rules::history_scope(window)`: no rule → no history, any `scope: season` rule → Season, otherwise Matchdays. For matchday-only rules kicktipp needs no extra requests: the cached tip page holds all tips of the matchday incl. started rows.
 
 # Delivery / CI
 - CI: `.github/workflows/ci.yml` (fmt, clippy, nextest, cargo-deny, `scripts/check-versions.sh`, helm lint + ct lint, rendered chart config → `betbot --check-config`, docker build). Weekly RUSTSEC check: `audit.yml`.
 - Releases: release-please (Conventional Commits) → tag `vX.Y.Z` → native amd64 + arm64 builds merged into one multi-arch image `ghcr.io/mrsteakhouse/betbot` (+ provenance attestation) → chart via chart-releaser to GitHub Pages (`https://mrsteakhouse.github.io/betbot`). All in `.github/workflows/release.yml`, strictly in that order.
 - Versions in `Cargo.toml`, `Cargo.lock` and `charts/betbot/Chart.yaml` (`version` + `appVersion`) are owned by release-please — never edit them by hand. Chart version == app version.
+- Never click "Update branch" on the release-please PR and never push to its branch: release-please regenerates it on every push to main. If it gets into a broken state, close it and delete its branch; the next push to main creates a fresh one.
+- The image name `ghcr.io/mrsteakhouse/betbot` belongs to this repo. The old Python implementation (`mrsteakhouse/kicktipp-betbot`, still running in the cluster) publishes as `ghcr.io/mrsteakhouse/betbot-legacy`.
+- `gh-pages` holds the Helm repo index (managed by chart-releaser); GitHub Pages serves it from that branch.
 - Commit messages MUST follow Conventional Commits (`feat:`, `fix:`, `chore:`, `ci:`, `docs:` …; `feat!:` / `BREAKING CHANGE:` for breaking changes). Pre-1.0: `feat` bumps minor.
 - PRs are squash-merged and the PR title becomes the commit message release-please parses, so PR titles must be Conventional Commits too (types feat, fix, perf, revert, docs, style, chore, refactor, test, build, ci). Enforced by `.github/workflows/pr-title.yml` (job `pr-title`, add it as required status check together with `consistency`, `rust`, `chart`, `docker`). Release-please PRs opened with `GITHUB_TOKEN` trigger neither CI nor this check → use `RELEASE_PLEASE_TOKEN` (fine-grained PAT) or admin bypass.
 - Rust toolchain: `rust-toolchain.toml`; the Dockerfile builder tag (`rust:<channel>-trixie`) must match (checked by `scripts/check-versions.sh`; Dependabot ignores the `rust` image for that reason).
