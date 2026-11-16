@@ -27,8 +27,8 @@ allow = ["CDLA-Permissive-2.0"]
 crate = "webpki-root-certs"
 
 [licenses.private]
-# betbot itself is unpublished (publish = false) and has no license field.
-ignore = true
+# betbot itself is unpublished (publish = false); its own license is checked too.
+ignore = false
 
 [bans]
 multiple-versions = "warn"

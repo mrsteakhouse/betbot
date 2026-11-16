@@ -8,3 +8,5 @@ home: https://github.com/mrsteakhouse/betbot
 sources:
   - https://github.com/mrsteakhouse/betbot
 keywords: [tippspiel, kicktipp, bundesliga, cronjob]
+annotations:
+  artifacthub.io/license: MIT OR Apache-2.0
