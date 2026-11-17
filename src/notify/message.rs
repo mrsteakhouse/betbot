@@ -157,6 +157,7 @@ mod tests {
             away: away.into(),
             tip: Tip { home: h, away: a },
             expected_points: 0.0,
+            previous: None,
         }
     }
 

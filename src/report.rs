@@ -16,7 +16,8 @@ pub fn render_all(outcomes: &[TenantOutcome]) -> String {
 }
 
 /// Renders one tenant's dry-run result as a table: one row per tip
-/// (teams, tip, expected points), followed by the warnings. Ends with `\n`.
+/// (teams, tip, expected points and, for already tipped matches, the placed
+/// tip as `bisher X:Y`), followed by the warnings. Ends with `\n`.
 pub fn dry_run_table(tenant: &str, result: &Result<TenantReport, TenantError>) -> String {
     let report = match result {
         Ok(r) => r,
@@ -74,7 +75,7 @@ fn write_rows(out: &mut String, tips: &[ReportedTip], several_matchdays: bool) {
             let _ = writeln!(out, "  Spieltag {}:", t.matchday);
             current = Some(t.matchday);
         }
-        let _ = writeln!(
+        let _ = write!(
             out,
             "{indent}{} – {}  {}  (EP {:.3})",
             pad_right(&t.home, home_width),
@@ -82,6 +83,10 @@ fn write_rows(out: &mut String, tips: &[ReportedTip], several_matchdays: bool) {
             pad_left(tip, tip_width),
             t.expected_points
         );
+        if let Some(prev) = t.previous {
+            let _ = write!(out, "  bisher {prev}");
+        }
+        out.push('\n');
     }
 }
 
@@ -109,6 +114,21 @@ mod tests {
             away: away.into(),
             tip: Tip { home: h, away: a },
             expected_points: ep,
+            previous: None,
+        }
+    }
+
+    fn tip_prev(
+        matchday: u32,
+        home: &str,
+        away: &str,
+        (h, a): (u8, u8),
+        ep: f64,
+        (ph, pa): (u8, u8),
+    ) -> ReportedTip {
+        ReportedTip {
+            previous: Some(Tip { home: ph, away: pa }),
+            ..tip(matchday, home, away, h, a, ep)
         }
     }
 
@@ -160,6 +180,63 @@ mod tests {
              \x20 Spieltag 12:\n\
              \x20   FC Nordstadt – SV Südhafen  2:1  (EP 1.000)\n\
              \x20   C            – D            0:0  (EP 0.250)\n"
+        );
+    }
+
+    #[test]
+    fn shows_previous_tip() {
+        let r = report(
+            vec![12],
+            vec![
+                tip_prev(12, "FC Nordstadt", "SV Südhafen", (2, 0), 1.0416, (1, 0)),
+                tip_prev(12, "TSV Westfeld", "1. FC Ostberg", (10, 1), 0.71, (1, 1)),
+                tip_prev(12, "A", "B", (0, 0), 0.5, (10, 2)),
+            ],
+        );
+        assert_eq!(
+            dry_run_table("alice", &Ok(r)),
+            "alice – Spieltag 12 (dry run)\n\
+             \x20 FC Nordstadt – SV Südhafen     2:0  (EP 1.042)  bisher 1:0\n\
+             \x20 TSV Westfeld – 1. FC Ostberg  10:1  (EP 0.710)  bisher 1:1\n\
+             \x20 A            – B               0:0  (EP 0.500)  bisher 10:2\n"
+        );
+    }
+
+    #[test]
+    fn previous_only_on_some_rows() {
+        let r = report(
+            vec![12],
+            vec![
+                tip(12, "A", "B", 2, 1, 1.5),
+                tip_prev(12, "C", "D", (1, 1), 0.75, (0, 0)),
+            ],
+        );
+        let table = dry_run_table("alice", &Ok(r));
+        assert_eq!(
+            table,
+            "alice – Spieltag 12 (dry run)\n\
+             \x20 A – B  2:1  (EP 1.500)\n\
+             \x20 C – D  1:1  (EP 0.750)  bisher 0:0\n"
+        );
+        assert!(table.lines().all(|l| l == l.trim_end()), "{table}");
+    }
+
+    #[test]
+    fn grouped_rows_show_previous_tip() {
+        let r = report(
+            vec![10, 12],
+            vec![
+                tip_prev(12, "C", "D", (2, 1), 1.0, (1, 1)),
+                tip(10, "A", "B", 1, 0, 0.5),
+            ],
+        );
+        assert_eq!(
+            dry_run_table("alice", &Ok(r)),
+            "alice – Spieltage 10, 12 (dry run)\n\
+             \x20 Spieltag 10:\n\
+             \x20   A – B  1:0  (EP 0.500)\n\
+             \x20 Spieltag 12:\n\
+             \x20   C – D  2:1  (EP 1.000)  bisher 1:1\n"
         );
     }
 
