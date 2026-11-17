@@ -21,7 +21,15 @@ tenants:
       type: fake
       fixture: examples/fake-data.yaml
     odds: { type: platform }
-    algorithm: { type: poisson, maxTipGoals: 5 }
+    algorithm:
+      type: poisson
+      maxTipGoals: 5
+      # Optional: pick deterministically (from seed and team names) among all
+      # tips whose expected points are at most `tolerance` below the best, so
+      # tenants with different seeds tip differently. tolerance 0..=1, 0 = off.
+      # Seeds only make a difference where several tips are close in expected
+      # points. Omit the block for the pure best tip.
+      variation: { seed: 42, tolerance: 0.05 }
     # scoring omitted = kicktipp default (tendency 2, goal difference 3, exact 4,
     # no difference points for draws). This tenant uses a 3/2/1 scheme where
     # draws also get goal-difference points (1:1 vs 2:2 = 2).

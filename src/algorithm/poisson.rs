@@ -21,12 +21,29 @@ const MAX_RMSE: f64 = 0.02;
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct PoissonConfig {
     pub max_tip_goals: u8,
+    /// Optional deterministic variation among near-best tips.
+    pub variation: Option<VariationConfig>,
 }
 
 impl Default for PoissonConfig {
     fn default() -> Self {
-        Self { max_tip_goals: 5 }
+        Self {
+            max_tip_goals: 5,
+            variation: None,
+        }
     }
+}
+
+/// Picks uniformly (but deterministically, from `seed` and the match
+/// identity) among all tips whose expected points are within `tolerance` of
+/// the best, so tenants with different seeds get different tips.
+/// `tolerance` 0 = no variation.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VariationConfig {
+    pub seed: i64,
+    /// Maximum expected-points loss against the best tip.
+    pub tolerance: f64,
 }
 
 /// Probability of each exact result, indexed `[home][away]`, summing to 1.
@@ -295,13 +312,96 @@ pub fn rank_tips(m: &ScoreMatrix, scoring: &ScoringScheme, max_tip_goals: u8) ->
     candidates
 }
 
+/// FNV-1a, 64 bit. Hand-rolled because std hashers are not stable across
+/// Rust versions, and the variation pick must not change with the toolchain.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    bytes
+        .iter()
+        .fold(OFFSET, |h, &b| (h ^ u64::from(b)).wrapping_mul(PRIME))
+}
+
+/// splitmix64 finalizer: spreads FNV's weak low bits over the whole word.
+fn splitmix64_mix(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// Stable hash of `(seed, home team, away team)`. The match identity is the
+/// pair of team names, not the platform's match id or the matchday, so the
+/// pick does not depend on platform ids.
+fn variation_hash(seed: i64, home: &str, away: &str) -> u64 {
+    let mut bytes = Vec::with_capacity(10 + home.len() + away.len());
+    bytes.extend_from_slice(&seed.to_le_bytes());
+    bytes.push(0xFF);
+    bytes.extend_from_slice(home.as_bytes());
+    bytes.push(0xFF);
+    bytes.extend_from_slice(away.as_bytes());
+    splitmix64_mix(fnv1a64(&bytes))
+}
+
+/// Moves the variation pick (uniformly chosen among the candidates within
+/// `tolerance` of the best) to the front; the rest keeps its EP order.
+///
+/// Known limitation: if the pick hits a rule limit, the rules step tries the
+/// following candidates in order, which starts with the pure best at zero or
+/// negative loss.
+fn vary(candidates: &mut Vec<Candidate>, v: VariationConfig, fixture: &Match) {
+    if v.tolerance <= 0.0 {
+        return;
+    }
+    let Some(best) = candidates.first().copied() else {
+        return;
+    };
+    let eligible: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| best.expected_points - c.expected_points <= v.tolerance)
+        .map(|(i, _)| i)
+        .collect();
+    let h = variation_hash(v.seed, &fixture.home, &fixture.away);
+    // `eligible` is non-empty (it contains index 0) and `h % len < len`.
+    let Some(&idx) = usize::try_from(h % eligible.len() as u64)
+        .ok()
+        .and_then(|i| eligible.get(i))
+    else {
+        return;
+    };
+    if idx == 0 {
+        return;
+    }
+    let picked = candidates.remove(idx);
+    candidates.insert(0, picked);
+    tracing::info!(
+        match_id = %fixture.id,
+        home = %fixture.home,
+        away = %fixture.away,
+        best = %best.tip,
+        picked = %picked.tip,
+        ep_loss = format_args!("{:.3}", best.expected_points - picked.expected_points),
+        eligible = eligible.len(),
+        "variation changed the pick"
+    );
+}
+
 pub struct PoissonAlgorithm {
     max_tip_goals: u8,
+    variation: Option<VariationConfig>,
 }
 
 impl PoissonAlgorithm {
     pub fn new(max_tip_goals: u8) -> Self {
-        Self { max_tip_goals }
+        Self {
+            max_tip_goals,
+            variation: None,
+        }
+    }
+
+    pub fn with_variation(mut self, variation: Option<VariationConfig>) -> Self {
+        self.variation = variation;
+        self
     }
 }
 
@@ -312,13 +412,17 @@ impl TipAlgorithm for PoissonAlgorithm {
 
     fn rank(
         &self,
-        _fixture: &Match,
+        fixture: &Match,
         odds: &Odds,
         scoring: &ScoringScheme,
     ) -> Result<Vec<Candidate>, AlgorithmError> {
         let (lh, la) = fit(odds)?;
         let m = ScoreMatrix::poisson(lh, la);
-        Ok(rank_tips(&m, scoring, self.max_tip_goals))
+        let mut candidates = rank_tips(&m, scoring, self.max_tip_goals);
+        if let Some(v) = self.variation {
+            vary(&mut candidates, v, fixture);
+        }
+        Ok(candidates)
     }
 }
 
@@ -507,6 +611,136 @@ mod tests {
             odds(3.0, 4.0, 4.0),
         ] {
             assert!(matches!(fit(&o), Err(AlgorithmError::InvalidOdds(_))));
+        }
+    }
+
+    fn fixture(home: &str, away: &str) -> Match {
+        Match {
+            id: crate::domain::MatchId::new("m"),
+            home: home.into(),
+            away: away.into(),
+            kickoff: jiff::Timestamp::UNIX_EPOCH,
+            matchday: 1,
+            competition: "X".into(),
+        }
+    }
+
+    fn varied(seed: i64, tolerance: f64) -> PoissonAlgorithm {
+        PoissonAlgorithm::new(5).with_variation(Some(VariationConfig { seed, tolerance }))
+    }
+
+    #[test]
+    fn hash_known_answers() {
+        assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a64(b"foobar"), 0x8594_4171_f739_67e8);
+        assert_eq!(splitmix64_mix(0x9e37_79b9_7f4a_7c15), 0xe220_a839_7b1d_cdaf);
+        // Pinned: changing this changes every tenant's picks.
+        assert_eq!(variation_hash(7, "FC A", "FC B"), PINNED_VARIATION_HASH);
+    }
+
+    const PINNED_VARIATION_HASH: u64 = 0x6b81_b05f_3415_e444;
+
+    #[test]
+    fn variation_is_deterministic() {
+        let o = odds(2.6, 3.4, 2.6);
+        let s = ScoringScheme::default();
+        let f = fixture("FC A", "FC B");
+        let a = varied(7, 0.2).rank(&f, &o, &s).unwrap();
+        let b = varied(7, 0.2).rank(&f, &o, &s).unwrap();
+        let ta: Vec<Tip> = a.iter().map(|c| c.tip).collect();
+        let tb: Vec<Tip> = b.iter().map(|c| c.tip).collect();
+        assert_eq!(ta, tb);
+    }
+
+    #[test]
+    fn zero_tolerance_equals_no_variation() {
+        let s = ScoringScheme::default();
+        let f = fixture("FC A", "FC B");
+        for o in [odds(2.6, 3.4, 2.6), odds(1.5, 4.2, 6.5)] {
+            let plain: Vec<Tip> = PoissonAlgorithm::new(5)
+                .rank(&f, &o, &s)
+                .unwrap()
+                .iter()
+                .map(|c| c.tip)
+                .collect();
+            for seed in [0, 1, -5, 7, 1000] {
+                let v: Vec<Tip> = varied(seed, 0.0)
+                    .rank(&f, &o, &s)
+                    .unwrap()
+                    .iter()
+                    .map(|c| c.tip)
+                    .collect();
+                assert_eq!(v, plain, "seed {seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn variation_stays_within_tolerance() {
+        let s = ScoringScheme::default();
+        let f = fixture("FC A", "FC B");
+        let tolerance = 0.1;
+        for lh in [0.6, 1.0, 1.4, 1.9, 2.6] {
+            for la in [0.5, 0.9, 1.3, 2.0] {
+                let o = fair_odds(lh, la, false);
+                let plain = PoissonAlgorithm::new(5).rank(&f, &o, &s).unwrap();
+                let best = plain[0].expected_points;
+                for seed in [0, 1, -5, 7, 1000] {
+                    let c = varied(seed, tolerance).rank(&f, &o, &s).unwrap();
+                    assert_eq!(c.len(), plain.len());
+                    let unique: HashSet<Tip> = c.iter().map(|c| c.tip).collect();
+                    assert_eq!(unique.len(), c.len());
+                    assert!(best - c[0].expected_points <= tolerance + 1e-12);
+                    assert!(
+                        c[1..]
+                            .windows(2)
+                            .all(|w| w[0].expected_points >= w[1].expected_points - 1e-9)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn seeds_produce_different_picks() {
+        let s = ScoringScheme::default();
+        let o = odds(2.6, 3.4, 2.6);
+        let tolerance = 0.2;
+        let plain = PoissonAlgorithm::new(5)
+            .rank(&fixture("FC A", "FC B"), &o, &s)
+            .unwrap();
+        let eligible = plain
+            .iter()
+            .filter(|c| plain[0].expected_points - c.expected_points <= tolerance)
+            .count();
+        assert!(eligible >= 2, "test premise: {eligible} eligible tips");
+
+        let f = fixture("FC A", "FC B");
+        let picks: HashSet<Tip> = (0..20)
+            .map(|seed| varied(seed, tolerance).rank(&f, &o, &s).unwrap()[0].tip)
+            .collect();
+        assert!(picks.len() >= 2, "{picks:?}");
+
+        let picks = |seed| -> Vec<Tip> {
+            (0..30)
+                .map(|i| {
+                    let f = fixture(&format!("T{i}"), &format!("T{}", i + 100));
+                    varied(seed, tolerance).rank(&f, &o, &s).unwrap()[0].tip
+                })
+                .collect()
+        };
+        assert_ne!(picks(1), picks(2));
+    }
+
+    #[test]
+    fn strong_favourite_ignores_seed_with_small_tolerance() {
+        let s = ScoringScheme::default();
+        let o = odds(1.20, 7.0, 15.0);
+        let f = fixture("FC A", "FC B");
+        let plain = PoissonAlgorithm::new(5).rank(&f, &o, &s).unwrap()[0].tip;
+        for seed in 0..20 {
+            assert_eq!(varied(seed, 0.001).rank(&f, &o, &s).unwrap()[0].tip, plain);
         }
     }
 

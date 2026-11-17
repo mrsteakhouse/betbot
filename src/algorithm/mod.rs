@@ -12,8 +12,11 @@ pub use poisson::PoissonConfig;
 pub trait TipAlgorithm: Send + Sync {
     fn name(&self) -> &'static str;
 
-    /// Postcondition: non-empty, unique tips, sorted best-first (expected points
-    /// descending, then fewer total goals, then more home goals).
+    /// Postcondition: non-empty, unique tips, preferred first. Without
+    /// variation sorted best-first (expected points descending, then fewer
+    /// total goals, then more home goals). With variation the first element is
+    /// the variation pick (expected points within the tolerance of the best),
+    /// the rest is sorted as above.
     fn rank(
         &self,
         fixture: &Match,
@@ -44,6 +47,8 @@ impl Default for AlgorithmConfig {
 
 pub fn build(cfg: &AlgorithmConfig) -> Box<dyn TipAlgorithm> {
     match cfg {
-        AlgorithmConfig::Poisson(p) => Box::new(poisson::PoissonAlgorithm::new(p.max_tip_goals)),
+        AlgorithmConfig::Poisson(p) => {
+            Box::new(poisson::PoissonAlgorithm::new(p.max_tip_goals).with_variation(p.variation))
+        }
     }
 }
