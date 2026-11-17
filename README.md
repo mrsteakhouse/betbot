@@ -192,18 +192,25 @@ unreadable or invalid.
 
 ### Dry run
 
-With `--dry-run` nothing is submitted. After all tenants have run, betbot
-prints one table per tenant (in config order) on stdout: matchday, teams, tip,
-expected points (EP), warnings and errors. Logs go to stderr, so
+With `--dry-run` nothing is submitted. A dry run computes the whole tip window
+as if `overwriteExistingTips` were on: already tipped matches are recomputed
+(their old tip does not count towards the rules) and shown with the placed tip
+as `bisher X:Y`. Real runs still honour `overwriteExistingTips`.
+
+After all tenants have run, betbot prints one table per tenant (in config
+order) on stdout: matchday, teams, tip, expected points (EP), the previous tip,
+warnings and errors. Logs go to stderr, so
 `betbot --config config.yaml --dry-run 2>/dev/null` shows only the table:
 
 ```text
 demo – Spieltag 12 (dry run)
-  FC Nordstadt – SV Südhafen    2:0  (EP 1.042)
-  TSV Westfeld – 1. FC Ostberg  1:1  (EP 0.710)
+  FC Nordstadt    – SV Südhafen       2:0  (EP 1.042)
+  TSV Westfeld    – 1. FC Ostberg     1:1  (EP 0.710)
+  VfB Mittelstadt – Borussia Talheim  0:1  (EP 0.766)  bisher 1:1
 ```
 
-Without `--dry-run` nothing is printed on stdout.
+In a dry run, the `submitted` count in the logs and the `dry run: would notify`
+text refer to this preview. Without `--dry-run` nothing is printed on stdout.
 
 ## Deployment with Helm
 

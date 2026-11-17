@@ -25,7 +25,8 @@ pub struct RunOptions {
 #[derive(Debug, Clone)]
 pub struct TenantReport {
     pub matches_open: usize,
-    /// Tips submitted (or, in a dry run, tips that would have been submitted).
+    /// Tips submitted (or, in a dry run, the tips of the preview, which
+    /// recomputes existing tips).
     pub submitted: usize,
     pub skipped: usize,
     pub violations: usize,
@@ -47,6 +48,9 @@ pub struct ReportedTip {
     pub tip: Tip,
     /// Expected platform points of the chosen tip.
     pub expected_points: f64,
+    /// Tip already placed on the platform before this run (dry-run preview
+    /// and overwrite runs; None if the match had no tip).
+    pub previous: Option<Tip>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,9 +147,13 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
     matchdays.dedup();
     let mut fixed: Vec<PlacedTip> = Vec::new();
     let mut todo: Vec<Match> = Vec::new();
+    // A dry run previews the whole tip window, as if existing tips were
+    // overwritten.
+    let recompute = opts.overwrite_existing || opts.dry_run;
+    let mut previous: HashMap<MatchId, Tip> = HashMap::new();
     for m in open {
         match m.tip {
-            Some(tip) if !opts.overwrite_existing => {
+            Some(tip) if !recompute => {
                 info!(match_id = %m.fixture.id, home = %m.fixture.home, away = %m.fixture.away,
                       %tip, "keeping existing tip");
                 fixed.push(PlacedTip {
@@ -154,7 +162,19 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
                     tip,
                 });
             }
-            _ => todo.push(m.fixture),
+            other => {
+                if let Some(tip) = other {
+                    let msg = if opts.dry_run {
+                        "recomputing existing tip (dry run)"
+                    } else {
+                        "overwriting existing tip"
+                    };
+                    info!(match_id = %m.fixture.id, home = %m.fixture.home, away = %m.fixture.away,
+                          %tip, "{msg}");
+                    previous.insert(m.fixture.id.clone(), tip);
+                }
+                todo.push(m.fixture);
+            }
         }
     }
     info!(
@@ -254,6 +274,7 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
             away: fixture.map_or_else(String::new, |m| m.away.clone()),
             tip: a.tip,
             expected_points: a.expected_points,
+            previous: previous.get(&a.match_id).copied(),
         });
     }
 
@@ -267,6 +288,11 @@ pub async fn run_tenant<P: TipPlatform, O: OddsProvider>(
         .collect();
     if submissions.is_empty() {
         info!("nothing to submit");
+    } else if opts.dry_run && !opts.overwrite_existing && !previous.is_empty() {
+        info!(
+            count = submissions.len(),
+            "dry run: would submit tips (preview recomputes existing tips)"
+        );
     } else if opts.dry_run {
         info!(count = submissions.len(), "dry run: would submit tips");
     } else {
@@ -1127,6 +1153,127 @@ mod tests {
                 reason: "keine Quoten".into(),
             }]
         );
+    }
+
+    fn two_tipped_matches(existing: Tip) -> FakeData {
+        FakeData {
+            matches: vec![
+                fake_match("m1", Some(odds(1.5, 4.2, 6.5)), Some(existing)),
+                fake_match("m2", Some(odds(3.8, 3.5, 1.95)), Some(existing)),
+            ],
+            history: vec![],
+        }
+    }
+
+    fn tip_of<'a>(r: &'a TenantReport, home: &str) -> &'a ReportedTip {
+        r.tips.iter().find(|t| t.home == home).unwrap()
+    }
+
+    #[tokio::test]
+    async fn dry_run_recomputes_existing_tips() {
+        let existing = Tip { home: 0, away: 0 };
+        let p = FakePlatform::new(two_tipped_matches(existing));
+        let r = run(&p, &Rules::default(), opts(true, false)).await.unwrap();
+        assert_eq!(r.submitted, 2);
+        assert_eq!(r.tips.len(), 2);
+        let m1 = tip_of(&r, "m1-home");
+        assert_eq!(m1.previous, Some(existing));
+        assert_eq!(m1.tip, top_tip(&odds(1.5, 4.2, 6.5)));
+        let m2 = tip_of(&r, "m2-home");
+        assert_eq!(m2.previous, Some(existing));
+        assert_eq!(m2.tip, top_tip(&odds(3.8, 3.5, 1.95)));
+        assert!(p.submitted_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dry_run_without_existing_tips_has_no_previous() {
+        let p = FakePlatform::new(two_matches());
+        let r = run(&p, &Rules::default(), opts(true, false)).await.unwrap();
+        assert_eq!(r.tips.len(), 2);
+        assert!(r.tips.iter().all(|t| t.previous.is_none()));
+    }
+
+    #[tokio::test]
+    async fn real_run_keeps_existing_tips_unchanged() {
+        let existing = Tip { home: 0, away: 0 };
+        let p = FakePlatform::new(FakeData {
+            matches: vec![
+                fake_match("m1", Some(odds(1.5, 4.2, 6.5)), Some(existing)),
+                fake_match("m2", Some(odds(3.8, 3.5, 1.95)), None),
+            ],
+            history: vec![],
+        });
+        let r = run(&p, &Rules::default(), opts(false, false))
+            .await
+            .unwrap();
+        assert_eq!(r.submitted, 1);
+        assert_eq!(r.tips.len(), 1);
+        assert_eq!(r.tips[0].home, "m2-home");
+        assert_eq!(r.tips[0].previous, None);
+        assert_eq!(submitted_ids(&p), vec!["m2"]);
+    }
+
+    #[tokio::test]
+    async fn overwrite_run_reports_previous() {
+        let existing = Tip { home: 0, away: 0 };
+        let p = FakePlatform::new(two_tipped_matches(existing));
+        let r = run(&p, &Rules::default(), opts(false, true)).await.unwrap();
+        assert_eq!(r.submitted, 2);
+        assert!(r.tips.iter().all(|t| t.previous == Some(existing)));
+        assert_eq!(submitted_ids(&p), vec!["m1", "m2"]);
+    }
+
+    #[tokio::test]
+    async fn dry_run_old_tips_not_counted_in_history() {
+        let mirrored = |t: Tip| (t.home.max(t.away), t.home.min(t.away));
+        // High-scoring favourite (O/U 2.5 favours over): top tip 2:1.
+        let high = Odds {
+            over_under_2_5: Some(OverUnder {
+                over: 1.4,
+                under: 2.9,
+            }),
+            ..odds(1.5, 4.6, 5.5)
+        };
+        let low = odds(1.5, 4.2, 6.5);
+        let (top1, top2) = (top_tip(&low), top_tip(&high));
+        assert_ne!(
+            mirrored(top1),
+            mirrored(top2),
+            "test premise: different top results"
+        );
+        let data = |history: Vec<PlacedTip>| FakeData {
+            matches: vec![
+                fake_match("m1", Some(low.clone()), Some(top1)),
+                fake_match("m2", Some(high.clone()), Some(top1)),
+            ],
+            history,
+        };
+        let rules = Rules {
+            max_same_result: Some(MaxSameResult {
+                max: 1,
+                scope: Scope::Matchday,
+                mirrored: true,
+            }),
+        };
+        // Both matches already carry m1's top result: counted as history,
+        // this would exceed the limit of 1.
+        let p = FakePlatform::new(data(vec![]));
+        let r = run(&p, &rules, opts(true, false)).await.unwrap();
+        assert_eq!(r.violations, 0);
+        assert_eq!(tip_of(&r, "m1-home").tip, top1);
+        assert_eq!(tip_of(&r, "m2-home").tip, top2);
+
+        // A tip of a started match of the same matchday (not in the window)
+        // still counts, so m1 has to move away from its top result.
+        let p = FakePlatform::new(data(vec![PlacedTip {
+            matchday: 12,
+            match_id: MatchId::new("started"),
+            tip: top1,
+        }]));
+        let r = run(&p, &rules, opts(true, false)).await.unwrap();
+        assert_eq!(r.violations, 0);
+        assert_ne!(mirrored(tip_of(&r, "m1-home").tip), mirrored(top1));
+        assert!(p.submitted_calls().is_empty());
     }
 
     #[tokio::test(start_paused = true)]
