@@ -44,7 +44,10 @@ spec:
             {{- end }}
         spec:
           restartPolicy: Never
+          serviceAccountName: {{ include "betbot.serviceAccountName" . }}
           automountServiceAccountToken: false
+          enableServiceLinks: false
+          hostUsers: {{ .Values.hostUsers }}
           {{- with .Values.imagePullSecrets }}
           imagePullSecrets:
             {{- toYaml . | nindent 12 }}

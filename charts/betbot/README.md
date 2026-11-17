@@ -10,6 +10,11 @@ Secrets that you create yourself; the chart never handles them.
 - Kubernetes >= 1.31 (`podFailurePolicy` is GA, CronJob `timeZone` is supported).
 - Only if `networkPolicy.enabled: true`: a CNI/controller that enforces
   NetworkPolicy (k3s: the built-in kube-router does).
+- With the default `hostUsers: false` (own user namespace): Kubernetes >= 1.33
+  (UserNamespacesSupport enabled by default), a runtime with support
+  (containerd >= 2.0) and a kernel with idmapped mounts for tmpfs (>= 6.3).
+  Set `hostUsers: true` to opt out. On clusters without the feature gate the
+  API server silently ignores the field.
 
 ## Install
 
@@ -71,7 +76,11 @@ config. Credentials never belong in values.
 | `backoffLimit` | `2` | Retries after exit code 1. |
 | `dryRun` | `false` | Compute and log tips without submitting them (`--dry-run`). |
 | `logLevel` | `info` | `RUST_LOG` filter, e.g. `info,betbot=debug`. |
-| `resources` | requests 50m CPU / 32Mi, limit 128Mi | Container resources. |
+| `hostUsers` | `false` | `false` runs the pod in its own user namespace (see [Requirements](#requirements)); `true` opts out. |
+| `serviceAccount.create` | `true` | Creates a dedicated ServiceAccount (no RBAC, token never mounted). |
+| `serviceAccount.name` | `""` | ServiceAccount name; defaults to the release fullname, or `default` with `create: false`. |
+| `serviceAccount.annotations` | `{}` | Annotations on the created ServiceAccount. |
+| `resources` | requests 50m CPU / 32Mi / 8Mi ephemeral storage, limits 500m CPU / 128Mi / 32Mi ephemeral storage | Container resources. Ephemeral storage only holds the stdout logs (read-only root filesystem). |
 | `podAnnotations` | `{}` | Extra pod annotations. |
 | `podLabels` | `{}` | Extra pod labels. |
 | `nodeSelector` | `{}` | Pod node selector. |
@@ -194,6 +203,15 @@ DNS (`kube-system`/`kube-dns`, UDP/TCP 53) and TCP 443 anywhere, since
 kicktipp has no fixed IP. "Anywhere" also covers in-cluster services on 443,
 including the API server; this is accepted because the pod has no service
 account token (`automountServiceAccountToken: false`).
+
+## Hardening
+
+The pod meets the Pod Security Standard `restricted`: non-root (uid 65532),
+read-only root filesystem, no capabilities, no privilege escalation,
+`RuntimeDefault` seccomp profile. In addition it runs in its own user namespace
+(`hostUsers: false`), gets no service environment variables
+(`enableServiceLinks: false`) and no API token, and uses a dedicated
+ServiceAccount without any RBAC permissions.
 
 ## Validation
 

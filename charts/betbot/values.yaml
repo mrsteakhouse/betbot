@@ -28,12 +28,30 @@ dryRun: false
 # RUST_LOG filter, e.g. "info" or "info,betbot=debug".
 logLevel: info
 
+# Run the pod in its own user namespace (uid 65532 maps to an unprivileged host
+# uid). Requires Kubernetes >= 1.33 (UserNamespacesSupport, default on), a
+# runtime with support (containerd >= 2.0) and a kernel with idmapped mounts for
+# tmpfs (>= 6.3). Set true to opt out on clusters that cannot do this.
+hostUsers: false
+
+serviceAccount:
+  # Create a dedicated ServiceAccount (token is never mounted, no RBAC is granted).
+  create: true
+  # Defaults to the release fullname; with create: false defaults to "default".
+  name: ""
+  annotations: {}
+
+# Ephemeral storage only holds the container's stdout logs; the root
+# filesystem is read-only.
 resources:
   requests:
     cpu: 50m
     memory: 32Mi
+    ephemeral-storage: 8Mi
   limits:
+    cpu: 500m
     memory: 128Mi
+    ephemeral-storage: 32Mi
 
 podAnnotations: {}
 podLabels: {}
