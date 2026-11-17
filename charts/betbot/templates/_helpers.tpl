@@ -80,3 +80,11 @@ derived from it. `omit` returns a copy, so .Values is never mutated.
 {{- end -}}
 {{- toYaml $config -}}
 {{- end }}
+
+{{- define "betbot.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- default (include "betbot.fullname" .) .Values.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.name -}}
+{{- end -}}
+{{- end }}

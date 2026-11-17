@@ -303,9 +303,13 @@ Important chart values (all of them with comments in
 | `networkPolicy.extraEgress` | `[]` | Extra egress rules, e.g. for a self-hosted ntfy on another port. |
 | `config.notifiers[].existingSecret` | – | Secret with the key `url`, mounted at `/notifiers/<name>/url` (`urlFile` is set automatically). |
 | `image.tag` | chart `appVersion` | Image version. |
+| `hostUsers` | `false` | Own user namespace; needs Kubernetes >= 1.33 (UserNamespacesSupport enabled by default). `true` opts out. |
+| `serviceAccount.create` | `true` | Dedicated ServiceAccount without RBAC and without a mounted token. |
 
 The pod runs as non-root (uid 65532) with a read-only root filesystem and no
-capabilities.
+capabilities, in its own user namespace, without service links or an API token,
+and with CPU, memory and ephemeral-storage limits. Details in the
+[chart README](charts/betbot/README.md#hardening).
 
 ## Development
 
